@@ -1,0 +1,3 @@
+[submodule "src/frontend/vendor/gd5"]
+	path = src/frontend/vendor/gd5
+	url = https://github.com/zigslice/gd5.git
