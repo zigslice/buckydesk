@@ -1476,7 +1476,10 @@ mod tests {
     }
 
     fn argv(words: &[&str]) -> Vec<String> {
-        words.iter().map(|word| (*word).to_string()).collect()
+        std::iter::once("desk")
+            .chain(words.iter().copied())
+            .map(str::to_string)
+            .collect()
     }
 
     #[test]

@@ -194,7 +194,7 @@ fn kernel_host() -> String {
     }
 }
 
-fn probe_addr(endpoint: &str) -> bool {
+pub(crate) fn probe_addr(endpoint: &str) -> bool {
     let Ok(mut addresses) = endpoint.to_socket_addrs() else {
         return false;
     };
@@ -378,7 +378,8 @@ pub fn require_ready() -> Result<String, Report> {
 }
 
 pub fn reset_report() -> Report {
-    if remove_file().is_err() || crate::workspace::wipe().is_err() {
+    if remove_file().is_err() || crate::workspace::wipe().is_err() || crate::cloud::wipe().is_err()
+    {
         return Report::fail("身份写不进去。");
     }
     Report::ok("工作区已重置。").with_data(empty_data())

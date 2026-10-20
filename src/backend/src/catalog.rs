@@ -55,18 +55,29 @@ pub fn root() -> &'static Command {
 }
 
 static ROOT: Command = Command {
-    name: "buckydesk",
-    summary: "本机 BuckyOS 无界面内核的命令壳",
+    name: "bucky",
+    summary: "这台电脑上的工作区，以及用域名从公网打开它",
     surface: Surface::Both,
     args: &[],
-    children: &[
-        VERSION,
-        COMMANDS,
-        SERVER,
-        KERNEL,
-        IDENTITY,
-        crate::workspace::WORKSPACE,
-    ],
+    children: &[VERSION, COMMANDS, DESK, CLOUD],
+    run: None,
+};
+
+static DESK: Command = Command {
+    name: "desk",
+    summary: "这台电脑上的工作区",
+    surface: Surface::Both,
+    args: &[],
+    children: &[DESK_OPEN, KERNEL, IDENTITY, crate::workspace::WORKSPACE],
+    run: None,
+};
+
+static CLOUD: Command = Command {
+    name: "cloud",
+    summary: "用域名从公网打开这个 Zone",
+    surface: Surface::Both,
+    args: &[],
+    children: &[CLOUD_STATUS, CLOUD_DOMAIN],
     run: None,
 };
 
@@ -88,13 +99,37 @@ static COMMANDS: Command = Command {
     run: Some(commands),
 };
 
-static SERVER: Command = Command {
-    name: "server",
+static DESK_OPEN: Command = Command {
+    name: "open",
     summary: "在 127.0.0.1:1016 提供页面，并打开浏览器",
     surface: Surface::Cli,
     args: &[BIND, NO_OPEN, FRONTEND, GD5],
     children: &[],
     run: Some(server),
+};
+
+const ZONE_DOMAIN: Arg = Arg {
+    name: "name",
+    takes_value: true,
+    summary: "Zone 的域名",
+};
+
+static CLOUD_STATUS: Command = Command {
+    name: "status",
+    summary: "查看域名、DNS 和 80/443 是否对得上",
+    surface: Surface::Both,
+    args: &[],
+    children: &[],
+    run: Some(cloud_status),
+};
+
+static CLOUD_DOMAIN: Command = Command {
+    name: "domain",
+    summary: "查看或记下 Zone 的域名",
+    surface: Surface::Both,
+    args: &[ZONE_DOMAIN],
+    children: &[],
+    run: Some(cloud_domain),
 };
 
 static KERNEL: Command = Command {
@@ -257,6 +292,28 @@ fn kernel_status(_: &Invocation) -> Result<Report, CommandError> {
 
 fn kernel_services(_: &Invocation) -> Result<Report, CommandError> {
     Ok(crate::desk::with_desk(crate::desk::services_report))
+}
+
+fn cloud_status(_: &Invocation) -> Result<Report, CommandError> {
+    match crate::desk::with_desk(crate::cloud::stored_domain) {
+        Ok(domain) => Ok(crate::cloud::status_report(&domain)),
+        Err(report) => Ok(report),
+    }
+}
+
+fn cloud_domain(invocation: &Invocation) -> Result<Report, CommandError> {
+    let name = invocation.value("name").unwrap_or("");
+    let saved = crate::desk::with_desk(|| {
+        if name.is_empty() {
+            crate::cloud::stored_domain()
+        } else {
+            crate::cloud::set_domain(name)
+        }
+    });
+    match saved {
+        Ok(domain) => Ok(crate::cloud::status_report(&domain)),
+        Err(report) => Ok(report),
+    }
 }
 
 fn kernel_start(_: &Invocation) -> Result<Report, CommandError> {

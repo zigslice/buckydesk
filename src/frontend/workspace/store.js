@@ -29,6 +29,8 @@ export function initialState() {
     kernel: { attached: false, summary: '' },
     openApps: [],
     services: [],
+    cloud: null,
+    cloudSummary: '',
   };
 }
 

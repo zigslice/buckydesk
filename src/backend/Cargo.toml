@@ -6,7 +6,7 @@ description = "Local shell for a headless BuckyOS kernel"
 publish = false
 
 [[bin]]
-name = "buckydesk"
+name = "bucky"
 path = "src/main.rs"
 
 [dependencies]

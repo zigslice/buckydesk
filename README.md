@@ -9,7 +9,7 @@ BuckyDesk 只依赖 BuckyOS 的无界面内核。界面用 [gd5](https://github.
 本地打开页面：
 
 ```
-cargo run -p buckydesk -- server
+cargo run -p buckydesk -- desk open
 ```
 
 浏览器进入 `http://127.0.0.1:1016`，看到的是工作区。名字、密码、文件、消息、Agent、模型和工作记在这台电脑上。摘要会发给填写的模型服务。内核是否已在运行会显示出来；拉起内核仍留在后面。

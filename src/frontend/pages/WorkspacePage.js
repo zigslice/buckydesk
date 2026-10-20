@@ -50,8 +50,8 @@ export class WorkspacePage extends Component {
     await loadUi();
     const local = loadState();
     try {
-      const identity = await exec(['identity', 'status']);
-      const kernel = await exec(['kernel', 'status']);
+      const identity = await exec(['desk', 'identity', 'status']);
+      const kernel = await exec(['desk', 'kernel', 'status']);
       this.state.data = applyBoot(local, identity, kernel);
     } catch {
       this.state.data = { ...local, phase: 'unavailable', formError: '', notice: '' };
@@ -71,7 +71,7 @@ export class WorkspacePage extends Component {
   async act(argv, extra) {
     let report;
     try {
-      report = await exec(argv);
+      report = await exec(['desk', ...argv]);
     } catch {
       this.commit({ ...this.state.data, formError: '工作区暂时打不开。' });
       return;
@@ -91,6 +91,43 @@ export class WorkspacePage extends Component {
   openApp(id) {
     this.commit(launchApp(this.state.data, id));
     if (id === 'gateway') void this.loadServices();
+    if (id === 'computer') void this.loadCloud();
+  }
+
+  async loadCloud() {
+    if (this.state.data?.phase !== 'desk') return;
+    let report;
+    try {
+      report = await exec(['cloud', 'status']);
+    } catch {
+      return;
+    }
+    if (!report.ok || this.state.data?.phase !== 'desk') return;
+    this.commit({
+      ...this.state.data,
+      cloudSummary: report.summary || '',
+      cloud: report.data || null,
+    });
+  }
+
+  async setDomain() {
+    let report;
+    try {
+      report = await exec(['cloud', 'domain', '--name', this.field('domain').trim()]);
+    } catch {
+      this.commit({ ...this.state.data, formError: '工作区暂时打不开。' });
+      return;
+    }
+    if (!report.ok) {
+      this.commit({ ...this.state.data, formError: report.summary || '域名格式不正确' });
+      return;
+    }
+    this.commit({
+      ...this.state.data,
+      formError: '',
+      cloudSummary: report.summary || '',
+      cloud: report.data || null,
+    });
   }
 
   closeWindow(id) {
@@ -101,7 +138,7 @@ export class WorkspacePage extends Component {
     if (this.state.data?.phase !== 'desk') return;
     let report;
     try {
-      report = await exec(['kernel', 'services']);
+      report = await exec(['desk', 'kernel', 'services']);
     } catch {
       return;
     }
@@ -118,13 +155,14 @@ export class WorkspacePage extends Component {
 
   async openWorkspace(base) {
     try {
-      const report = await exec(['workspace', 'status']);
+      const report = await exec(['desk', 'workspace', 'status']);
       if (!report.ok) {
         this.commit({ ...base, formError: report.summary || '工作区暂时打不开。' });
         return;
       }
       this.commit(applyWorkspace(base, report.data));
       void this.loadServices();
+      void this.loadCloud();
     } catch {
       this.commit({ ...base, formError: '工作区暂时打不开。' });
     }
@@ -169,6 +207,7 @@ export class WorkspacePage extends Component {
       let report;
       try {
         report = await exec([
+          'desk',
           'identity',
           'activate',
           '--name',
@@ -207,7 +246,7 @@ export class WorkspacePage extends Component {
     if (!this.state.data || this.state.data.phase !== 'preparing') return;
     let report;
     try {
-      report = await exec(['identity', 'finish']);
+      report = await exec(['desk', 'identity', 'finish']);
     } catch {
       this.commit({ ...this.state.data, phase: 'unavailable' });
       return;
@@ -233,7 +272,7 @@ export class WorkspacePage extends Component {
   async signIn() {
     let report;
     try {
-      report = await exec(['identity', 'login', '--password', this.field('password')]);
+      report = await exec(['desk', 'identity', 'login', '--password', this.field('password')]);
     } catch {
       this.commit({ ...this.state.data, formError: '工作区暂时打不开。' });
       return;
@@ -259,6 +298,7 @@ export class WorkspacePage extends Component {
     let report;
     try {
       report = await exec([
+        'desk',
         'identity',
         'password',
         '--current',
@@ -279,12 +319,12 @@ export class WorkspacePage extends Component {
 
   async resetDesk() {
     try {
-      const report = await exec(['identity', 'reset']);
+      const report = await exec(['desk', 'identity', 'reset']);
       if (!report.ok) {
         this.commit({ ...this.state.data, formError: report.summary });
         return;
       }
-      const kernel = await exec(['kernel', 'status']);
+      const kernel = await exec(['desk', 'kernel', 'status']);
       const next = resetAll();
       next.kernel = {
         attached: Boolean(kernel.data?.attached),
@@ -1032,12 +1072,11 @@ function computer(page, state) {
     Text({ type: 'secondary', text: '在别处打开' }),
     Text({
       type: 'muted',
-      text: state.reach
-        ? state.reach.kind === 'domain'
-          ? `已记下域名 ${state.reach.value}。别人还不能从网上打开。`
-          : `已记下名字 ${state.reach.value}。别人还不能从网上打开。`
-        : '还只有这台电脑的浏览器能打开。',
+      text: state.cloudSummary || '还只有这台电脑的浏览器能打开。',
     }),
+    state.reach?.kind === 'local'
+      ? Text({ type: 'muted', text: `已记下名字 ${state.reach.value}。` })
+      : null,
     elRow([
       Button({
         text: '用我的名字',
@@ -1046,7 +1085,7 @@ function computer(page, state) {
       Input({ id: 'domain', placeholder: '自己的域名' }),
       Button({
         text: '用这个域名',
-        onClick: () => page.act(['workspace', 'reach', '--kind', 'domain', '--value', page.field('domain')]),
+        onClick: () => page.setDomain(),
       }),
     ]),
     Text({ type: 'secondary', text: '我去设置另一台电脑' }),

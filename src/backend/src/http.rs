@@ -393,10 +393,12 @@ mod tests {
         );
         assert!(commands.starts_with("HTTP/1.1 200"));
         let tree: Value = serde_json::from_str(body_of(&commands)).unwrap();
-        assert_eq!(tree["commands"][2]["name"], "server");
-        assert_eq!(tree["commands"][2]["surface"], "cli");
+        assert_eq!(tree["commands"][2]["name"], "desk");
+        assert_eq!(tree["commands"][2]["commands"][0]["name"], "open");
+        assert_eq!(tree["commands"][2]["commands"][0]["surface"], "cli");
+        assert_eq!(tree["commands"][3]["name"], "cloud");
 
-        let payload = br#"{"argv":["kernel","status"]}"#;
+        let payload = br#"{"argv":["desk","kernel","status"]}"#;
         let exec = exchange(
             addr,
             &format!(
@@ -410,7 +412,7 @@ mod tests {
         assert_eq!(report["ok"], true);
         assert!(report["data"]["attached"].is_boolean());
 
-        let denied = br#"{"argv":["server"]}"#;
+        let denied = br#"{"argv":["desk","open"]}"#;
         let blocked = exchange(
             addr,
             &format!(
