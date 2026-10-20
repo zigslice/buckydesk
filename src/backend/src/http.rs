@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-const MAX_REQUEST: usize = 64 * 1024;
+const MAX_REQUEST: usize = 3 * 1024 * 1024;
 
 pub struct Site {
     pub frontend: PathBuf,
@@ -59,7 +59,7 @@ fn handle_client(mut stream: TcpStream, site: &Site) -> io::Result<()> {
                 413,
                 "Payload Too Large",
                 "text/plain; charset=utf-8",
-                "请求超过 64KB".as_bytes(),
+                "请求超过 3MB".as_bytes(),
             );
         }
         Err(error) => return Err(error),

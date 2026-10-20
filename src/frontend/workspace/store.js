@@ -80,55 +80,58 @@ function withoutSecrets(state) {
   return next;
 }
 
-export function applyBoot(local, identity, kernel) {
-  const stored = withoutSecrets(local && typeof local === 'object' ? { ...initialState(), ...local } : initialState());
+export function applyBoot(_local, identity, kernel) {
   const kernelState = {
     attached: Boolean(kernel?.data?.attached),
     summary: typeof kernel?.summary === 'string' ? kernel.summary : '',
   };
   if (!identity || identity.ok !== true) {
-    return { ...stored, phase: 'unavailable', kernel: kernelState, formError: '', notice: '' };
+    return { ...initialState(), phase: 'unavailable', kernel: kernelState };
   }
   const data = identity.data || {};
   if (!data.configured) {
     return {
       ...initialState(),
-      files: stored.files,
-      people: stored.people,
-      members: stored.members,
-      messages: stored.messages,
-      agents: stored.agents,
-      works: stored.works,
-      model: stored.model,
-      reach: stored.reach,
-      otherComputer: stored.otherComputer,
-      language: stored.language,
-      pickedFolders: stored.pickedFolders,
-      agentDraft: stored.agentDraft,
       phase: kernelState.attached ? 'occupied' : 'welcome',
-      account: null,
-      ready: false,
       kernel: kernelState,
-      formError: '',
-      notice: '',
     };
   }
   const account = { name: data.name || '', keyFolder: data.keyFolder || '' };
-  const others = Array.isArray(stored.members)
-    ? stored.members.filter((member) => member && member.id !== 'owner')
-    : [];
   return {
-    ...stored,
+    ...initialState(),
     account,
-    members: [{ id: 'owner', name: account.name }, ...others],
     kernel: kernelState,
     ready: data.phase === 'ready',
     phase: data.phase === 'partial' ? 'partial' : 'login',
-    formError: '',
-    notice: '',
     place: 'today',
-    resetArmed: false,
   };
+}
+
+export function applyWorkspace(state, data, extra = {}) {
+  const ws = data?.workspace;
+  const next = {
+    ...state,
+    formError: '',
+    notice: typeof data?.notice === 'string' ? data.notice : state.notice,
+    ...(data?.place ? { place: data.place } : {}),
+    ...(data?.openWorkId ? { openWorkId: data.openWorkId } : {}),
+    ...(data?.openFileId ? { openFileId: data.openFileId } : {}),
+    ...extra,
+  };
+  if (!ws) return next;
+  next.files = Array.isArray(ws.files) && ws.files.some((file) => file.id === 'root') ? ws.files : next.files;
+  next.people = Array.isArray(ws.people) ? ws.people : [];
+  next.members = Array.isArray(ws.members) ? ws.members : [];
+  next.messages = Array.isArray(ws.messages) ? ws.messages : [];
+  next.agents = Array.isArray(ws.agents) ? ws.agents : [];
+  next.works = Array.isArray(ws.works) ? ws.works : [];
+  next.model = ws.model || null;
+  next.reach = ws.reach || null;
+  next.otherComputer = ws.otherComputer || '';
+  next.language = ws.language || '中文';
+  if (next.openFileId && !next.files.some((file) => file.id === next.openFileId)) next.openFileId = null;
+  if (!next.files.some((file) => file.id === next.folderId)) next.folderId = 'root';
+  return next;
 }
 
 function uid(prefix) {

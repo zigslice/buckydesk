@@ -3,52 +3,31 @@ import { Button, Card, Checkbox, Field, Input, Text, TextArea, Title, loadUi } f
 import { el } from '/gd5/src/ui/util.js';
 import { exec } from '../workspace/api.js';
 import {
-  addFile,
-  addFolder,
-  addMember,
-  addPerson,
   applyBoot,
+  applyWorkspace,
   armReset,
-  askSummary,
   beginSetup,
-  chooseReach,
   closeFile,
-  connectModel,
-  createAgent,
   crumbs,
   childrenOf,
-  deleteFile,
-  disconnectModel,
-  dismissWork,
   editWork,
   enterDesk,
   finishSetup,
   folders,
   go,
-  keepWork,
   loadState,
   logout,
   maskKey,
-  moveFile,
-  newWork,
   nextPasswordError,
-  noteOtherComputer,
   openFile,
   openFolder,
   openWork,
-  renameFile,
-  replyMessage,
   resetAll,
   resumeSetup,
-  saveState,
-  saveTelegram,
   searchFiles,
-  setLanguage,
   startCreate,
   todayItems,
-  toggleAgent,
   toggleFolder,
-  toggleMute,
   undoWork,
 } from '../workspace/store.js';
 
@@ -72,9 +51,7 @@ export class WorkspacePage extends Component {
     try {
       const identity = await exec(['identity', 'status']);
       const kernel = await exec(['kernel', 'status']);
-      const next = applyBoot(local, identity, kernel);
-      saveState(next);
-      this.state.data = next;
+      this.state.data = applyBoot(local, identity, kernel);
     } catch {
       this.state.data = { ...local, phase: 'unavailable', formError: '', notice: '' };
     }
@@ -86,9 +63,41 @@ export class WorkspacePage extends Component {
   }
 
   commit(next) {
-    saveState(next);
     this.state.data = next;
     this.refresh();
+  }
+
+  async act(argv, extra) {
+    let report;
+    try {
+      report = await exec(argv);
+    } catch {
+      this.commit({ ...this.state.data, formError: '工作区暂时打不开。' });
+      return;
+    }
+    if (!report.ok) {
+      this.commit({ ...this.state.data, formError: report.summary || '工作区暂时打不开。' });
+      return;
+    }
+    this.commit(applyWorkspace(this.state.data, report.data, extra));
+  }
+
+  async openWorkspace(base) {
+    try {
+      const report = await exec(['workspace', 'status']);
+      if (!report.ok) {
+        this.commit({ ...base, formError: report.summary || '工作区暂时打不开。' });
+        return;
+      }
+      this.commit(applyWorkspace(base, report.data));
+    } catch {
+      this.commit({ ...base, formError: '工作区暂时打不开。' });
+    }
+  }
+
+  async summarize(id) {
+    this.commit({ ...this.state.data, notice: '正在写摘要。', formError: '' });
+    await this.act(['workspace', 'summary', '--file', id]);
   }
 
   field(id) {
@@ -183,7 +192,7 @@ export class WorkspacePage extends Component {
       keyFolder: report.data.keyFolder || next.account?.keyFolder,
     };
     next.ready = true;
-    this.commit(next);
+    await this.openWorkspace(next);
   }
 
   async signIn() {
@@ -198,7 +207,7 @@ export class WorkspacePage extends Component {
       this.commit({ ...this.state.data, formError: report.summary || '密码不正确。' });
       return;
     }
-    this.commit(enterDesk(this.state.data));
+    await this.openWorkspace(enterDesk(this.state.data));
   }
 
   async updatePassword() {
@@ -390,7 +399,7 @@ function today(page, state) {
                   }),
                   Button({
                     text: '知道了',
-                    onClick: () => page.commit(dismissWork(page.state.data, item.id)),
+                    onClick: () => page.act(['workspace', 'work', 'dismiss', '--id', item.id]),
                   }),
                 ]
               : Button({
@@ -423,7 +432,7 @@ function files(page, state) {
   const open = state.files.find((file) => file.id === state.openFileId);
   return Card(
     { title: '文件' },
-    Text({ type: 'secondary', text: '这是你的文件。这一版只记在这个浏览器里。' }),
+    Text({ type: 'secondary', text: '这是你的文件，记在这台电脑上。' }),
     formError(state),
     elRow(
       crumbs(state).map((crumb) =>
@@ -470,11 +479,15 @@ function files(page, state) {
             text: '留下',
             onClick: () => {
               const name = page.field('createName');
-              const next =
-                page.state.data.creating === 'folder'
-                  ? addFolder(page.state.data, name)
-                  : addFile(page.state.data, name, '');
-              page.commit(next);
+              const parent = page.state.data.folderId || 'root';
+              if (page.state.data.creating === 'folder') {
+                page.act(['workspace', 'file', 'mkdir', '--name', name, '--parent', parent], { creating: null });
+              } else {
+                page.act(
+                  ['workspace', 'file', 'add', '--name', name, '--parent', parent, '--text', ''],
+                  { creating: null }
+                );
+              }
             },
           }),
         ])
@@ -485,13 +498,18 @@ function files(page, state) {
     open && open.kind === 'file'
       ? Card(
           { title: open.name },
-          Text({ className: 'preview', text: open.text || '还没有正文。' }),
+          Text({
+            className: 'preview',
+            text: open.binary
+              ? '这个文件已放在这台电脑上。这一版先预览文本。'
+              : open.text || '还没有正文。',
+          }),
           elRow([
             Button({ text: '收起', onClick: () => page.commit(closeFile(page.state.data)) }),
             Button({
               type: 'primary',
               text: '做成摘要，放到工作里',
-              onClick: () => page.commit(askSummary(page.state.data, open.id)),
+              onClick: () => page.summarize(open.id),
             }),
           ])
         )
@@ -510,7 +528,11 @@ function fileRow(page, state, file) {
           Button({
             type: 'primary',
             text: '留下',
-            onClick: () => page.commit(renameFile(page.state.data, file.id, page.field('renameName'))),
+            onClick: () =>
+              page.act(
+                ['workspace', 'file', 'rename', '--id', file.id, '--name', page.field('renameName')],
+                { creating: null }
+              ),
           }),
         ]
       : [
@@ -529,7 +551,7 @@ function fileRow(page, state, file) {
             ? null
             : Button({
                 text: '删除',
-                onClick: () => page.commit(deleteFile(page.state.data, file.id)),
+                onClick: () => page.act(['workspace', 'file', 'remove', '--id', file.id]),
               }),
         ]
   );
@@ -541,7 +563,8 @@ function moveSelect(page, state, file) {
   if (!parent?.parentId) return null;
   return Button({
     text: '移到上一层',
-    onClick: () => page.commit(moveFile(page.state.data, file.id, parent.parentId)),
+    onClick: () =>
+      page.act(['workspace', 'file', 'move', '--id', file.id, '--parent', parent.parentId]),
   });
 }
 
@@ -562,7 +585,15 @@ function messages(page, state) {
             type: 'primary',
             text: '答复',
             onClick: () =>
-              page.commit(replyMessage(page.state.data, message.id, page.field(`reply-${message.id}`))),
+              page.act([
+                'workspace',
+                'message',
+                'reply',
+                '--id',
+                message.id,
+                '--text',
+                page.field(`reply-${message.id}`),
+              ]),
           }),
         ])
       )
@@ -583,7 +614,8 @@ function people(page, state) {
           Button({
             type: 'primary',
             text: '留下',
-            onClick: () => page.commit(addPerson(page.state.data, page.field('personName'))),
+            onClick: () =>
+              page.act(['workspace', 'person', 'add', '--name', page.field('personName')], { creating: null }),
           }),
         ])
       : null,
@@ -592,7 +624,7 @@ function people(page, state) {
       entry(person.name, person.muted ? '今天不打扰' : '认识', [
         Button({
           text: person.muted ? '取消静音' : '静音',
-          onClick: () => page.commit(toggleMute(page.state.data, person.id)),
+          onClick: () => page.act(['workspace', 'person', 'mute', '--id', person.id]),
         }),
       ])
     )
@@ -612,7 +644,8 @@ function works(page, state) {
           Button({
             type: 'primary',
             text: '留下',
-            onClick: () => page.commit(newWork(page.state.data, page.field('workTitle'))),
+            onClick: () =>
+              page.act(['workspace', 'work', 'create', '--title', page.field('workTitle')], { creating: null }),
           }),
         ])
       : null,
@@ -629,20 +662,28 @@ function works(page, state) {
             className: 'editor',
             value: open.body,
             onInput: (event) => {
-              const next = editWork(page.state.data, open.id, event.target.value);
-              saveState(next);
-              page.state.data = next;
+              page.state.data = editWork(page.state.data, open.id, event.target.value);
             },
           }),
           elRow([
             Button({
               type: 'primary',
               text: '留下',
-              onClick: () => page.commit(keepWork(page.state.data, open.id)),
+              onClick: () => {
+                const current = page.state.data.works.find((work) => work.id === open.id);
+                page.act(['workspace', 'work', 'keep', '--id', open.id, '--body', current?.body ?? '']);
+              },
             }),
             Button({
               text: '撤销',
-              onClick: () => page.commit(undoWork(page.state.data, open.id)),
+              onClick: () => {
+                const current = page.state.data.works.find((work) => work.id === open.id);
+                if (current && current.body !== current.saved) {
+                  page.commit(undoWork(page.state.data, open.id));
+                  return;
+                }
+                page.act(['workspace', 'work', 'undo', '--id', open.id]);
+              },
             }),
           ])
         )
@@ -682,11 +723,19 @@ function agents(page, state) {
             type: 'primary',
             text: '留下',
             onClick: () =>
-              page.commit(
-                createAgent(page.state.data, {
-                  name: page.field('agentName'),
-                  telegramId: page.field('telegramId'),
-                })
+              page.act(
+                [
+                  'workspace',
+                  'agent',
+                  'create',
+                  '--name',
+                  page.field('agentName'),
+                  '--folders',
+                  page.state.data.pickedFolders.join(','),
+                  '--telegram',
+                  page.field('telegramId'),
+                ],
+                { creating: null, pickedFolders: [], agentDraft: { name: '', telegramId: '' } }
               ),
           })
         )
@@ -703,7 +752,7 @@ function agents(page, state) {
         elRow([
           Button({
             text: agent.running ? '停下' : '开始',
-            onClick: () => page.commit(toggleAgent(page.state.data, agent.id)),
+            onClick: () => page.act(['workspace', 'agent', 'toggle', '--id', agent.id]),
           }),
         ]),
         elRow([
@@ -715,7 +764,15 @@ function agents(page, state) {
           Button({
             text: '记下',
             onClick: () =>
-              page.commit(saveTelegram(page.state.data, agent.id, page.field(`tg-${agent.id}`))),
+              page.act([
+                'workspace',
+                'agent',
+                'telegram',
+                '--id',
+                agent.id,
+                '--telegram',
+                page.field(`tg-${agent.id}`),
+              ]),
           }),
         ])
       )
@@ -726,23 +783,31 @@ function agents(page, state) {
 function model(page, state) {
   return Card(
     { title: '模型' },
-    Text({ type: 'secondary', text: '没有模型时，Agent 先不做事。你也可以回到今天。' }),
+    Text({ type: 'secondary', text: '服务填 http 地址。接上之后，摘要会发给这家服务。' }),
     formError(state),
     state.model
       ? [
           Text({ text: state.model.provider }),
-          Text({ type: 'secondary', text: `密钥 ${maskKey(state.model.key)}` }),
+          Text({ type: 'secondary', text: `密钥 ${state.model.masked || maskKey(state.model.key)}` }),
           Text({ text: `这个月大约用了 ${state.model.calls || 0} 次` }),
-          Button({ text: '断开', onClick: () => page.commit(disconnectModel(page.state.data)) }),
+          Button({ text: '断开', onClick: () => page.act(['workspace', 'model', 'disconnect']) }),
         ]
       : stack(
-          Field({ label: '服务' }, Input({ id: 'provider', placeholder: '例如一家你已经有密钥的服务' })),
+          Field({ label: '服务' }, Input({ id: 'provider', placeholder: 'https://api.example.com/v1' })),
           Field({ label: '密钥' }, Input({ id: 'modelKey', type: 'password' })),
           Button({
             type: 'primary',
             text: '接上',
             onClick: () =>
-              page.commit(connectModel(page.state.data, page.field('provider'), page.field('modelKey'))),
+              page.act([
+                'workspace',
+                'model',
+                'connect',
+                '--provider',
+                page.field('provider'),
+                '--key',
+                page.field('modelKey'),
+              ]),
           })
         )
   );
@@ -753,7 +818,7 @@ function computer(page, state) {
     { title: '这台电脑' },
     Text({ text: state.ready ? '工作区已就绪。' : '工作区还没准备好。' }),
     state.kernel?.summary ? Text({ text: state.kernel.summary }) : null,
-    Text({ type: 'secondary', text: '名字和密码记在这台电脑上。文件、消息、Agent 和模型记在这个浏览器里。' }),
+    Text({ type: 'secondary', text: '名字、密码、文件、消息、Agent 和模型都记在这台电脑上。' }),
     Text({ type: 'secondary', text: '钥匙文件夹只记下路径。' }),
     formError(state),
     state.notice ? Text({ text: state.notice }) : null,
@@ -767,7 +832,8 @@ function computer(page, state) {
           Button({
             type: 'primary',
             text: '留下',
-            onClick: () => page.commit(addMember(page.state.data, page.field('memberName'))),
+            onClick: () =>
+              page.act(['workspace', 'member', 'add', '--name', page.field('memberName')], { creating: null }),
           }),
         ])
       : Button({ text: '再加一个人', onClick: () => page.commit(startCreate(page.state.data, 'member')) }),
@@ -786,12 +852,12 @@ function computer(page, state) {
       Button({
         type: state.language === '中文' ? 'primary' : 'default',
         text: '中文',
-        onClick: () => page.commit(setLanguage(page.state.data, '中文')),
+        onClick: () => page.act(['workspace', 'language', '--name', '中文']),
       }),
       Button({
         type: state.language === 'English' ? 'primary' : 'default',
         text: 'English',
-        onClick: () => page.commit(setLanguage(page.state.data, 'English')),
+        onClick: () => page.act(['workspace', 'language', '--name', 'English']),
       }),
     ]),
     Text({ type: 'secondary', text: '在别处打开' }),
@@ -806,12 +872,12 @@ function computer(page, state) {
     elRow([
       Button({
         text: '用我的名字',
-        onClick: () => page.commit(chooseReach(page.state.data, 'local', '')),
+        onClick: () => page.act(['workspace', 'reach', '--kind', 'local']),
       }),
       Input({ id: 'domain', placeholder: '自己的域名' }),
       Button({
         text: '用这个域名',
-        onClick: () => page.commit(chooseReach(page.state.data, 'domain', page.field('domain'))),
+        onClick: () => page.act(['workspace', 'reach', '--kind', 'domain', '--value', page.field('domain')]),
       }),
     ]),
     Text({ type: 'secondary', text: '我去设置另一台电脑' }),
@@ -823,7 +889,7 @@ function computer(page, state) {
       Input({ id: 'other', placeholder: '地址' }),
       Button({
         text: '记下',
-        onClick: () => page.commit(noteOtherComputer(page.state.data, page.field('other'))),
+        onClick: () => page.act(['workspace', 'note', '--address', page.field('other')]),
       }),
     ]),
     Text({ type: 'muted', text: '还没有要添加的应用。' }),
@@ -840,7 +906,7 @@ function computer(page, state) {
     state.resetArmed
       ? Text({
           type: 'danger',
-          text: '重置会清掉这台电脑上记下的身份，以及这个浏览器里的文件、消息、Agent 和工作。退出只是离开，这些都还在。',
+          text: '重置会清掉这台电脑上的身份、文件、消息、Agent 和工作。退出只是离开，这些都还在。',
         })
       : null
   );
@@ -874,17 +940,33 @@ function entry(title, detail, actions) {
 }
 
 WorkspacePage.prototype.ingest = function ingest(file) {
+  const parent = this.state.data.folderId || 'root';
+  if (file.size > 1000000) {
+    this.commit({ ...this.state.data, formError: '这个文件太大，先放一份更小的。' });
+    return;
+  }
+  const textual = file.type.startsWith('text') || file.name.endsWith('.md') || file.name.endsWith('.txt');
   const reader = new FileReader();
   reader.onload = () => {
-    const text = typeof reader.result === 'string' ? reader.result : '';
-    this.commit(addFile(this.state.data, file.name, text.slice(0, 20000)));
+    if (textual) {
+      const text = typeof reader.result === 'string' ? reader.result : '';
+      this.act(
+        ['workspace', 'file', 'add', '--name', file.name, '--parent', parent, '--text', text.slice(0, 20000)],
+        { creating: null }
+      );
+      return;
+    }
+    const bytes = new Uint8Array(reader.result);
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    this.act(
+      ['workspace', 'file', 'add', '--name', file.name, '--parent', parent, '--bytes', btoa(binary)],
+      { creating: null }
+    );
   };
   reader.onerror = () => {
-    this.commit(addFile(this.state.data, file.name, '这个文件已放进来。这一版只能预览文本。'));
+    this.commit({ ...this.state.data, formError: '这个文件放不进来。' });
   };
-  if (file.type.startsWith('text') || file.name.endsWith('.md') || file.name.endsWith('.txt')) {
-    reader.readAsText(file);
-  } else {
-    this.commit(addFile(this.state.data, file.name, '这个文件已放进来。这一版只能预览文本。'));
-  }
+  if (textual) reader.readAsText(file);
+  else reader.readAsArrayBuffer(file);
 };
