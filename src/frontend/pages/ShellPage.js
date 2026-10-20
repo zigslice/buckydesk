@@ -36,6 +36,7 @@ export class ShellPage extends Component {
       });
       const result = await response.json();
       this.setData({ running: '', result, error: '' });
+      this.ids().result?.scrollIntoView({ block: 'nearest' });
     } catch (error) {
       this.setData({
         running: '',
@@ -56,8 +57,8 @@ export class ShellPage extends Component {
           text: tree?.summary || '本机命令壳。命令行和这个页面共用同一棵树。',
         }),
         data.error ? Text({ type: 'danger', text: data.error }) : null,
-        tree ? nodes(tree.commands || [], this) : null,
-        data.result ? resultCard(data.result) : null
+        data.result ? resultCard(data.result) : null,
+        tree ? nodes(tree.commands || [], this) : null
       );
     });
   }
@@ -79,7 +80,7 @@ function commandCard(node, page) {
   return Card(
     { title: node.name },
     Text({ type: 'secondary', text: node.summary }),
-    Text({ as: 'p', code: true, small: true, text: line }),
+    Text({ as: 'span', code: true, small: true, text: line }),
     flags ? Text({ type: 'muted', small: true, text: flags }) : null,
     runnable
       ? Button({
@@ -96,8 +97,8 @@ function commandCard(node, page) {
 function resultCard(result) {
   const data = result.data && Object.keys(result.data).length ? JSON.stringify(result.data) : '';
   return Card(
-    { title: result.ok ? '结果' : '未完成' },
+    { id: 'result', title: result.ok ? '结果' : '未完成' },
     Text({ type: result.ok ? 'default' : 'danger', text: result.summary || '' }),
-    data ? Text({ as: 'p', code: true, small: true, text: data }) : null
+    data ? Text({ as: 'span', code: true, small: true, text: data }) : null
   );
 }
