@@ -7,7 +7,7 @@
 | 文档 | 用途 |
 | --- | --- |
 | [01-结论](01-结论.md) | 先看这一篇。BuckyDesk 要补的缺口，以及不该重做的部分。 |
-| [02-buckyos-架构](02-buckyos-架构.md) | Zone、控制环、服务分层、桌面用户实际打开的是什么。 |
+| [02-buckyos-架构](02-buckyos-架构.md) | Zone 和控制环。进程分层和 Web/桌面客户端是两套东西，以及开箱时谁必需。 |
 | [03-运行安装与激活](03-运行安装与激活.md) | 目录、端口、容器、三条激活路径、现有安装包。 |
 | [04-websdk-与桌面壳](04-websdk-与桌面壳.md) | TypeScript SDK、`buckyos` CLI、BuckyOSApp 宿主桥。 |
 | [05-buckydesk-边界](05-buckydesk-边界.md) | 建议 BuckyDesk 拥有的子系统，以及还没在上游定下来的选择。 |
