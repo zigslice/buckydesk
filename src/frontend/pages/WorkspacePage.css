@@ -1,0 +1,56 @@
+.desk {
+  max-width: 880px;
+  margin: 28px auto 48px;
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.desk .nav,
+.desk .row,
+.desk .crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.desk .stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.desk .narrow {
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.desk .entry {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--gd-border);
+}
+
+.desk .entry .meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.desk .preview {
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+.desk .editor {
+  width: 100%;
+  min-height: 180px;
+}
