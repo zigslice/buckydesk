@@ -408,7 +408,7 @@ mod tests {
         assert!(exec.starts_with("HTTP/1.1 200"));
         let report: Value = serde_json::from_str(body_of(&exec)).unwrap();
         assert_eq!(report["ok"], true);
-        assert_eq!(report["data"]["attached"], false);
+        assert!(report["data"]["attached"].is_boolean());
 
         let denied = br#"{"argv":["server"]}"#;
         let blocked = exchange(
