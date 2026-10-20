@@ -95,12 +95,14 @@ App 进程的身份不从包名猜。`node-daemon` 必须注入 `BUCKYOS_APP_DID
 
 ### 客户端：都在调用 Zone，互相不是上下层
 
-| 客户端 | 实际位置 | 开箱时 |
+下表是上游自己的客户端。BuckyDesk 不使用它们，页面在 `127.0.0.1:1016`。
+
+| 客户端 | 实际位置 | 上游里的角色 |
 | --- | --- | --- |
-| Web 桌面 | `src/frame/desktop` 的静态页，装进 `bin/control-panel/web/`，由 `control-panel` 提供 | 当前唯一完整的人机界面。它是控制面板的前端，不是独立的一层操作系统 |
+| Web 桌面 | `src/frame/desktop` 的静态页，装进 `bin/control-panel/web/`，由 `control-panel` 提供 | 上游的人机界面，控制面板的前端 |
 | 激活向导 | `src/kernel/node_active` 的静态页，嵌在 `node-daemon` 里，端口 3182 | 只服务「尚未写身份」的那段时间。本地 `provision` 写完身份后可以不打开它 |
 | `buckyos` CLI / WebSDK | 系统镜像里的 `bin/buckyos`，源码在 websdk | 运维和 App 开发的调用面。浏览器里的 Web 桌面通过 SDK 访问 kapi。BuckyDesk 不必再内嵌一份 SDK |
-| BuckyOSApp | 另一个仓库的 Tauri 程序，安装包里的可选组件 | 单机开箱可以不要。它管的是壳内助记词，以及去打开另一台设备的激活页 |
+| BuckyOSApp | 另一个仓库的 Tauri 程序，安装包里的可选组件 | 壳内助记词，以及去打开另一台设备的激活页 |
 
 Web 在这里是实现技术，出现了三次：内核里的激活页、frame 里的系统桌面、Tauri 壳里的 WebView。三次都是页面，不是三个 Web 层。
 
@@ -114,4 +116,4 @@ BuckyOSApp 和 Web 桌面是并列的两个客户端。安装器把它们收成�
 - 运行时：页面由已启动的 `control-panel` 提供。真实 Zone 要关掉 Mock，并让页面能访问网关。
 - BuckyOSApp 当前的主界面是 DID、SN 绑定，以及发现并打开另一台设备的激活页。应用列表只展示，点击不启动。它是身份宿主，不是这套 Web 桌面。
 
-所以桌面产品至少有两个 UI 层：一个负责本机身份和窗口，一个是 Zone 起来之后的系统桌面。BuckyDesk 需要决定用户安装后第一眼看到哪一层，以及什么时候从身份层进入系统桌面。
+这些页面都是客户端。BuckyDesk 不使用其中任何一个，界面在自己的 `127.0.0.1:1016` 上用 gd5 重做。依赖范围见 [非 UI 内核](非ui内核.md)。

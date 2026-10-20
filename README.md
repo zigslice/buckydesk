@@ -2,4 +2,6 @@
 
 在 Windows 和 macOS 上提供 BuckyOS 的开箱即用运行环境。
 
-调研笔记在 [docs/](docs/README.md)。BuckyOS 本身按 Zone 运行时设计；这个仓库负责把单机桌面安装、首次启动和进程监管收成用户可直接使用的产品。
+BuckyDesk 只依赖 BuckyOS 的无界面内核。界面用 [gd5](https://github.com/zigslice/gd5) 写，由本机服务提供，浏览器打开 `http://127.0.0.1:1016`。
+
+约定写在 [docs/非ui内核.md](docs/非ui内核.md)。其余调研笔记在 [docs/](docs/README.md)。
