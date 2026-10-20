@@ -77,6 +77,35 @@ SN（在 `cyfs-gateway` 里）负责账号、设备在线信息和可选的流�
 
 App 进程的身份不从包名猜。`node-daemon` 必须注入 `BUCKYOS_APP_DID`、`BUCKYOS_APP_ID`、`BUCKYOS_APP_INSTANCE_ID`、`BUCKYOS_OWNER_USER_ID`、`BUCKYOS_DATA_DIR`、`BUCKYOS_APP_TOKEN`。SDK 启动时会检查它们彼此一致。
 
+## 两套「层」叠在了一起
+
+源码目录表达的是进程和权限。另外还有一组客户端，用 Web 或原生窗口去调用这些进程。两边都使用「应用」「桌面」「Web」，所以会看成同一套分层。
+
+### 进程分层：谁可以缺
+
+依赖方向是 `dapp → frame → kernel`。下层不依赖上层。
+
+| 层 | 缺了以后 | 对开箱运行 |
+| --- | --- | --- |
+| Kernel + `cyfs-gateway` | Zone 无法 boot，也没有本机入口 | 必需。至少是 `node-daemon`、`system-config`、scheduler、`verify-hub`、NodeGateway |
+| Frame 服务 | 少一项系统能力。`src/readme.md` 把 frame 定义成可缺失 | 按首屏需要挑选。boot 模板现在会写入 `control-panel` 和 `repo-service` 的 spec，所以默认安装会拉起它们；这是当前发行物的选择，不是控制环本身的前提 |
+| App（`.pikg`，含 Jarvis） | Zone 仍在，只是没有那个用户工作负载 | 可后装。要验收「能对话」时再预装 Jarvis，并因此带上容器运行时 |
+
+目录和启动重要性也不重合。`control-panel` 的源码在 `src/frame/`，boot 路径却把它写成初始服务。看目录会以为它可选，看启动会以为它是内核。
+
+### 客户端：都在调用 Zone，互相不是上下层
+
+| 客户端 | 实际位置 | 开箱时 |
+| --- | --- | --- |
+| Web 桌面 | `src/frame/desktop` 的静态页，装进 `bin/control-panel/web/`，由 `control-panel` 提供 | 当前唯一完整的人机界面。它是控制面板的前端，不是独立的一层操作系统 |
+| 激活向导 | `src/kernel/node_active` 的静态页，嵌在 `node-daemon` 里，端口 3182 | 只服务「尚未写身份」的那段时间。本地 `provision` 写完身份后可以不打开它 |
+| `buckyos` CLI / WebSDK | 系统镜像里的 `bin/buckyos`，源码在 websdk | 运维和 App 开发的调用面。浏览器里的 Web 桌面通过 SDK 访问 kapi。BuckyDesk 不必再内嵌一份 SDK |
+| BuckyOSApp | 另一个仓库的 Tauri 程序，安装包里的可选组件 | 单机开箱可以不要。它管的是壳内助记词，以及去打开另一台设备的激活页 |
+
+Web 在这里是实现技术，出现了三次：内核里的激活页、frame 里的系统桌面、Tauri 壳里的 WebView。三次都是页面，不是三个 Web 层。
+
+BuckyOSApp 和 Web 桌面是并列的两个客户端。安装器把它们收成「Desktop App」和「Desktop Service」，名字都带 Desktop，于是像是上下层。服务负责把 Zone 跑起来；App 负责在 Zone 之外保管一把钥匙并打开页面。只安装 App 时，本机没有 Zone。
+
 ## 用户打开桌面时实际看到的
 
 系统桌面是控制面板里的 Web 应用，不是操作系统的窗口管理器，也不是 BuckyOSApp 的主界面。
