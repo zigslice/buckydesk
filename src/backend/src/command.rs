@@ -151,7 +151,7 @@ pub fn describe(command: &Command) -> Value {
 }
 
 fn describe_at(command: &Command, parent: &[&str]) -> Value {
-    let path: Vec<&str> = if parent.is_empty() && command.name == "buckydesk" {
+    let path: Vec<&str> = if parent.is_empty() && command.name == "bucky" {
         Vec::new()
     } else {
         let mut path = parent.to_vec();
@@ -239,9 +239,9 @@ fn parse_args(
 
 pub fn help(command: &Command, path: &[&str]) -> String {
     let title = if path.is_empty() {
-        "buckydesk".to_string()
+        "bucky".to_string()
     } else {
-        format!("buckydesk {}", path.join(" "))
+        format!("bucky {}", path.join(" "))
     };
     let mut lines = vec![format!("{title} — {}", command.summary), String::new()];
     if command.children.is_empty() {
@@ -270,7 +270,7 @@ pub fn help(command: &Command, path: &[&str]) -> String {
 }
 
 fn display_path(path: &[&str], name: &str) -> String {
-    let mut parts = vec!["buckydesk"];
+    let mut parts = vec!["bucky"];
     parts.extend(path.iter().copied());
     if !name.is_empty() {
         parts.push(name);
@@ -290,9 +290,8 @@ mod tests {
     fn root_help_lists_every_group() {
         let report = dispatch(&[], Surface::Cli).unwrap();
         assert!(report.ok);
-        assert!(report.summary.contains("server"));
-        assert!(report.summary.contains("kernel"));
-        assert!(report.summary.contains("identity"));
+        assert!(report.summary.contains("desk"));
+        assert!(report.summary.contains("cloud"));
     }
 
     #[test]
@@ -302,7 +301,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("buckydesk-svc-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         crate::desk::isolate(&dir, &address.to_string(), || {
-            let report = dispatch(&argv("kernel services"), Surface::Http).unwrap();
+            let report = dispatch(&argv("desk kernel services"), Surface::Http).unwrap();
             assert!(report.ok);
             assert_eq!(report.summary, "网关已经在这台电脑上运行。");
             assert_eq!(
@@ -339,7 +338,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("buckydesk-cmd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         crate::desk::isolate(&dir, "127.0.0.1:1", || {
-            let report = dispatch(&argv("kernel status"), Surface::Http).unwrap();
+            let report = dispatch(&argv("desk kernel status"), Surface::Http).unwrap();
             assert!(report.ok);
             assert_eq!(
                 report.data.get("attached").and_then(Value::as_bool),
@@ -362,6 +361,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         crate::desk::isolate(&dir, "127.0.0.1:1", || {
             let activate = [
+                "desk",
                 "identity",
                 "activate",
                 "--name",
@@ -379,7 +379,7 @@ mod tests {
             let second = dispatch(&activate, Surface::Http).unwrap();
             assert!(!second.ok);
             assert_eq!(second.summary, "上次没有完成。");
-            let started = dispatch(&argv("kernel start"), Surface::Cli).unwrap();
+            let started = dispatch(&argv("desk kernel start"), Surface::Cli).unwrap();
             assert!(!started.ok);
             assert_eq!(started.summary, "这台电脑上还没有可拉起的内核。");
         });
@@ -388,21 +388,21 @@ mod tests {
 
     #[test]
     fn server_is_cli_only() {
-        let error = dispatch(&argv("server"), Surface::Http).unwrap_err();
+        let error = dispatch(&argv("desk open"), Surface::Http).unwrap_err();
         assert!(matches!(error, CommandError::Failed(_)));
     }
 
     #[test]
     fn unknown_command_is_usage() {
-        let error = dispatch(&argv("kernel reboot"), Surface::Cli).unwrap_err();
+        let error = dispatch(&argv("desk kernel reboot"), Surface::Cli).unwrap_err();
         assert!(matches!(error, CommandError::Usage(_)));
     }
 
     #[test]
     fn server_rejects_unknown_flag() {
-        let error = dispatch(&argv("server --port 1016"), Surface::Cli).unwrap_err();
+        let error = dispatch(&argv("desk open --port 1016"), Surface::Cli).unwrap_err();
         match error {
-            CommandError::Usage(text) => assert!(text.contains("buckydesk server")),
+            CommandError::Usage(text) => assert!(text.contains("bucky desk open")),
             CommandError::Failed(_) => panic!("unknown flag is usage, not failure"),
         }
     }
@@ -416,24 +416,21 @@ mod tests {
             .iter()
             .map(|node| node["name"].as_str().unwrap())
             .collect();
+        assert_eq!(names, vec!["version", "commands", "desk", "cloud"]);
+        let desk = &tree["commands"][2];
+        assert_eq!(desk["commands"][0]["name"], "open");
+        assert_eq!(desk["commands"][0]["surface"], "cli");
         assert_eq!(
-            names,
-            vec![
-                "version",
-                "commands",
-                "server",
-                "kernel",
-                "identity",
-                "workspace"
-            ]
+            desk["commands"][0]["path"],
+            serde_json::json!(["desk", "open"])
         );
-        let server = &tree["commands"][2];
-        assert_eq!(server["surface"], "cli");
-        assert_eq!(server["path"], serde_json::json!(["server"]));
-        let status = &tree["commands"][3]["commands"][0];
-        assert_eq!(status["path"], serde_json::json!(["kernel", "status"]));
+        let status = &desk["commands"][1]["commands"][0];
+        assert_eq!(
+            status["path"],
+            serde_json::json!(["desk", "kernel", "status"])
+        );
         assert_eq!(status["surface"], "both");
-        let identity: Vec<&str> = tree["commands"][4]["commands"]
+        let identity: Vec<&str> = desk["commands"][2]["commands"]
             .as_array()
             .unwrap()
             .iter()
@@ -443,5 +440,49 @@ mod tests {
             identity,
             vec!["status", "activate", "finish", "login", "password", "reset"]
         );
+        let cloud: Vec<&str> = tree["commands"][3]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(cloud, vec!["status", "domain"]);
+    }
+
+    #[test]
+    fn cloud_domain_is_a_name_until_the_gateway_is_public() {
+        let dir = std::env::temp_dir().join(format!("buckydesk-cloud-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::desk::isolate(&dir, "127.0.0.1:1", || {
+            let missing = dispatch(&argv("cloud status"), Surface::Http).unwrap();
+            assert!(missing.ok);
+            assert_eq!(
+                missing.summary,
+                "还没有域名。记下域名之后，才能从网上打开。"
+            );
+            let saved =
+                dispatch(&argv("cloud domain --name example.invalid"), Surface::Http).unwrap();
+            assert!(saved.ok);
+            assert_eq!(saved.data["domain"], "example.invalid");
+            assert_eq!(saved.data["zoneDid"], "did:web:example.invalid");
+            assert_eq!(saved.data["deviceDid"], "did:web:ood1.example.invalid");
+            assert_eq!(saved.data["reachable"], false);
+            assert_eq!(
+                saved.summary,
+                "已记下域名 example.invalid。别人还不能从网上打开。"
+            );
+            let bad = dispatch(
+                &argv("cloud domain --name=http://example.invalid"),
+                Surface::Http,
+            )
+            .unwrap();
+            assert!(!bad.ok);
+            assert_eq!(bad.summary, "域名格式不正确");
+            let reset = dispatch(&argv("desk identity reset"), Surface::Http).unwrap();
+            assert!(reset.ok);
+            let cleared = dispatch(&argv("cloud status"), Surface::Http).unwrap();
+            assert_eq!(cleared.data["domain"], "");
+        });
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

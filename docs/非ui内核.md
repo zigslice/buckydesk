@@ -1,6 +1,6 @@
 # 非 UI 内核
 
-BuckyDesk 只依赖 BuckyOS 的无界面内核。界面全部自己做：本机起一个 HTTP 服务，用 [gd5](https://github.com/zigslice/gd5) 写页面。`buckydesk server` 监听成功后，用浏览器打开 `http://127.0.0.1:1016`。
+BuckyDesk 只依赖 BuckyOS 的无界面内核。界面全部自己做：本机起一个 HTTP 服务，用 [gd5](https://github.com/zigslice/gd5) 写页面。`bucky desk open` 监听成功后，用浏览器打开 `http://127.0.0.1:1016`。
 
 上游的 Web 桌面、激活向导页面、控制面板前端、BuckyOSApp、websdk 的浏览器界面，都不再使用。
 
@@ -42,7 +42,7 @@ BuckyDesk 只依赖 BuckyOS 的无界面内核。界面全部自己做：本机�
 
 ## 本机界面
 
-`buckydesk server` 只绑定 `127.0.0.1:1016`，提供静态 HTML。页面在 `src/frontend`，用 gd5 直接写，不经过打包器。gd5 固定在 `src/frontend/vendor/gd5`：
+`bucky desk open` 只绑定 `127.0.0.1:1016`，提供静态 HTML。页面在 `src/frontend`，用 gd5 直接写，不经过打包器。gd5 固定在 `src/frontend/vendor/gd5`：
 
 - 引擎：`src/engine/`（`Component`、`ComponentRender`）
 - 组件：`src/ui/`（Button、Input、Modal 等）

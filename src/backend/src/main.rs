@@ -1,4 +1,5 @@
 mod catalog;
+mod cloud;
 mod command;
 mod desk;
 mod http;
