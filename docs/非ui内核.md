@@ -42,11 +42,13 @@ BuckyDesk 只依赖 BuckyOS 的无界面内核。界面全部自己做：本机�
 
 ## 本机界面
 
-`buckydesk server` 只绑定 `127.0.0.1:1016`，提供静态 HTML。页面用 gd5 直接写，不经过打包器：
+`buckydesk server` 只绑定 `127.0.0.1:1016`，提供静态 HTML。页面在 `src/frontend`，用 gd5 直接写，不经过打包器。gd5 固定在 `src/frontend/vendor/gd5`：
 
 - 引擎：`src/engine/`（`Component`、`ComponentRender`）
 - 组件：`src/ui/`（Button、Input、Modal 等）
 - 浏览器以 ESM 从同一个源加载这些文件，所以必须由这个 HTTP 服务提供，不能用 `file://`
+
+命令行和这个页面共用一棵命令树，见 [命令体系](命令体系.md)。
 
 服务开始监听之后，打开系统浏览器访问 `http://127.0.0.1:1016`。1016 是 BuckyDesk 自己的端口，不替代 3180，也不占用 BuckyOS 的系统端口。
 
