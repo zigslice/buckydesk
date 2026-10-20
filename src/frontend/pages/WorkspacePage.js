@@ -1,5 +1,5 @@
 import { Component } from '/gd5/src/engine/index.js';
-import { Button, Card, Checkbox, Field, Input, Text, TextArea, Title, loadUi } from '/gd5/src/ui/index.js';
+import { Button, Card, Checkbox, Field, Input, Text, TextArea, loadUi } from '/gd5/src/ui/index.js';
 import { el } from '/gd5/src/ui/util.js';
 import { exec } from '../workspace/api.js';
 import {
@@ -11,10 +11,11 @@ import {
   crumbs,
   childrenOf,
   editWork,
+  closeApp,
   enterDesk,
   finishSetup,
   folders,
-  go,
+  launchApp,
   loadState,
   logout,
   maskKey,
@@ -31,15 +32,15 @@ import {
   undoWork,
 } from '../workspace/store.js';
 
-const PLACES = [
-  ['today', '今天'],
-  ['files', '文件'],
-  ['messages', '消息'],
-  ['people', '我认识的人'],
-  ['work', '工作'],
-  ['agent', 'Agent'],
-  ['model', '模型'],
-  ['computer', '这台电脑'],
+const APPS = [
+  { id: 'gateway', name: '网关', mark: '关', hint: '内核入口' },
+  { id: 'files', name: '磁盘', mark: '盘', hint: '我的文件' },
+  { id: 'messages', name: '消息', mark: '信', hint: '要答复的' },
+  { id: 'people', name: '关系', mark: '人', hint: '我认识的人' },
+  { id: 'work', name: '工作', mark: '文', hint: '留下的东西' },
+  { id: 'agent', name: 'Agent', mark: 'A', hint: '替我做事' },
+  { id: 'model', name: '模型', mark: '模', hint: '服务和用量' },
+  { id: 'computer', name: '这台电脑', mark: '机', hint: '身份与就绪' },
 ];
 
 export class WorkspacePage extends Component {
@@ -79,7 +80,40 @@ export class WorkspacePage extends Component {
       this.commit({ ...this.state.data, formError: report.summary || '工作区暂时打不开。' });
       return;
     }
-    this.commit(applyWorkspace(this.state.data, report.data, extra));
+    const next = applyWorkspace(this.state.data, report.data, extra);
+    if (next.place && next.place !== 'today') {
+      const open = Array.isArray(next.openApps) ? next.openApps : [];
+      if (!open.includes(next.place)) next.openApps = [...open, next.place];
+    }
+    this.commit(next);
+  }
+
+  openApp(id) {
+    this.commit(launchApp(this.state.data, id));
+    if (id === 'gateway') void this.loadServices();
+  }
+
+  closeWindow(id) {
+    this.commit(closeApp(this.state.data, id));
+  }
+
+  async loadServices() {
+    if (this.state.data?.phase !== 'desk') return;
+    let report;
+    try {
+      report = await exec(['kernel', 'services']);
+    } catch {
+      return;
+    }
+    if (!report.ok || this.state.data?.phase !== 'desk') return;
+    this.commit({
+      ...this.state.data,
+      services: Array.isArray(report.data?.services) ? report.data.services : [],
+      kernel: {
+        attached: Boolean(report.data?.attached),
+        summary: report.summary || this.state.data.kernel?.summary || '',
+      },
+    });
   }
 
   async openWorkspace(base) {
@@ -90,6 +124,7 @@ export class WorkspacePage extends Component {
         return;
       }
       this.commit(applyWorkspace(base, report.data));
+      void this.loadServices();
     } catch {
       this.commit({ ...base, formError: '工作区暂时打不开。' });
     }
@@ -265,19 +300,138 @@ export class WorkspacePage extends Component {
   render() {
     const state = this.state.data?.phase ? this.state.data : loadState();
     this.paint(({ div }) => {
-      div({ id: 'root', className: 'desk' }, screen(this, state));
+      div({ id: 'root', className: 'os' }, chrome(this, state));
     });
   }
 }
 
-function screen(page, state) {
+function chrome(page, state) {
+  return [topbar(page, state), state.phase === 'desk' ? desktop(page, state) : el('div', { className: 'stage' }, setup(page, state))];
+}
+
+function setup(page, state) {
   if (state.phase === 'unavailable') return waiting('工作区暂时打不开。');
   if (state.phase === 'occupied') return occupied();
   if (state.phase === 'welcome') return welcome(page, state);
   if (state.phase === 'preparing') return waiting('正在准备你的工作区。');
   if (state.phase === 'partial') return partial(page);
   if (state.phase === 'login') return signIn(page, state);
-  return desk(page, state);
+  return waiting('工作区暂时打不开。');
+}
+
+function topbar(page, state) {
+  const live = Boolean(state.kernel?.attached);
+  return el(
+    'header',
+    { className: 'topbar' },
+    el(
+      'div',
+      { className: 'brand' },
+      el('strong', { text: 'BuckyDesk' }),
+      state.phase === 'desk' && state.account?.name
+        ? el('span', { className: 'who', text: `${state.account.name} 的电脑` })
+        : null
+    ),
+    state.phase === 'desk'
+      ? el('button', {
+          className: live ? 'pill live' : 'pill',
+          type: 'button',
+          text: live ? '网关在听' : '网关未启动',
+          onClick: () => page.openApp('gateway'),
+        })
+      : null
+  );
+}
+
+function desktop(page, state) {
+  const front = state.place && state.place !== 'today' ? state.place : null;
+  return [
+    el(
+      'div',
+      { className: 'surface' },
+      iconGrid(page, front),
+      front
+        ? windowFrame(page, state, front)
+        : el(
+            'section',
+            { className: 'window home' },
+            state.notice ? Text({ text: state.notice }) : null,
+            today(page, state)
+          )
+    ),
+    dock(page, state, front),
+  ];
+}
+
+function iconGrid(page, front) {
+  return el(
+    'div',
+    { className: 'icons' },
+    APPS.map((app) =>
+      el(
+        'button',
+        {
+          type: 'button',
+          className: front === app.id ? 'icon active' : 'icon',
+          onClick: () => page.openApp(app.id),
+        },
+        el('span', { className: 'mark', text: app.mark }),
+        el('strong', { text: app.name }),
+        el('em', { text: app.hint })
+      )
+    )
+  );
+}
+
+function windowFrame(page, state, id) {
+  const app = APPS.find((item) => item.id === id) || { name: id, mark: '·', hint: '' };
+  return el(
+    'section',
+    { className: 'window' },
+    el(
+      'header',
+      { className: 'titlebar' },
+      el('span', { className: 'mark', text: app.mark }),
+      el(
+        'div',
+        { className: 'titles' },
+        el('strong', { text: app.name }),
+        app.hint ? el('span', { className: 'hint', text: app.hint }) : null
+      ),
+      el('button', {
+        type: 'button',
+        className: 'close',
+        text: '关闭',
+        onClick: () => page.closeWindow(id),
+      })
+    ),
+    el(
+      'div',
+      { className: 'window-body' },
+      state.notice && state.place !== 'computer' ? Text({ text: state.notice }) : null,
+      place(page, state)
+    )
+  );
+}
+
+function dock(page, state, front) {
+  const open = Array.isArray(state.openApps) ? state.openApps : [];
+  if (!open.length) {
+    return el('footer', { className: 'dock' }, el('span', { className: 'dock-empty', text: '从左边打开一个程序。' }));
+  }
+  return el(
+    'footer',
+    { className: 'dock' },
+    open.map((id) => {
+      const app = APPS.find((item) => item.id === id);
+      return el('button', {
+        type: 'button',
+        className: front === id ? 'dock-app active' : 'dock-app',
+        text: app ? app.name : id,
+        onClick: () => page.openApp(id),
+      });
+    })
+  );
 }
 
 function welcome(page, state) {
@@ -346,31 +500,8 @@ function signIn(page, state) {
   );
 }
 
-function desk(page, state) {
-  return [
-    Title({ level: 1, text: 'BuckyDesk' }),
-    Text({ type: 'secondary', text: `${state.account.name} 的工作区` }),
-    divNav(page, state),
-    state.notice && state.place !== 'computer' ? Text({ text: state.notice }) : null,
-    place(page, state),
-  ];
-}
-
-function divNav(page, state) {
-  return el(
-    'div',
-    { className: 'nav' },
-    PLACES.map(([id, label]) =>
-      Button({
-        type: state.place === id ? 'primary' : 'default',
-        text: label,
-        onClick: () => page.commit(go(page.state.data, id)),
-      })
-    )
-  );
-}
-
 function place(page, state) {
+  if (state.place === 'gateway') return gateway(page, state);
   if (state.place === 'files') return files(page, state);
   if (state.place === 'messages') return messages(page, state);
   if (state.place === 'people') return people(page, state);
@@ -379,6 +510,43 @@ function place(page, state) {
   if (state.place === 'model') return model(page, state);
   if (state.place === 'computer') return computer(page, state);
   return today(page, state);
+}
+
+function gateway(page, state) {
+  const services = Array.isArray(state.services) ? state.services : [];
+  const attached = Boolean(state.kernel?.attached);
+  return el(
+    'div',
+    { className: 'stack' },
+    Text({
+      text: attached
+        ? '网关已经在这台电脑上运行。对内核的调用从 127.0.0.1:3180 进去。'
+        : '网关还没有在这台电脑上运行。拉起留到内核包接上之后。',
+    }),
+    Text({
+      type: 'secondary',
+      text: '下面是 BuckyOS 在这台电脑上的服务。在听，表示已经有进程占着这个端口。',
+    }),
+    services.length
+      ? services.map((service) =>
+          el(
+            'div',
+            { className: 'service' },
+            el(
+              'div',
+              { className: 'meta' },
+              Text({ text: `${service.name} · ${service.port}` }),
+              Text({ type: 'secondary', text: service.role })
+            ),
+            el('span', {
+              className: service.listening ? 'live-tag' : 'quiet-tag',
+              text: service.listening ? '在听' : '没在听',
+            })
+          )
+        )
+      : Text({ type: 'muted', text: '正在看这台电脑上的服务。' }),
+    Button({ text: '再看一次', onClick: () => page.loadServices() })
+  );
 }
 
 function today(page, state) {
@@ -405,14 +573,14 @@ function today(page, state) {
               : Button({
                   type: 'primary',
                   text: '去答复',
-                  onClick: () => page.commit(go(page.state.data, 'messages')),
+                  onClick: () => page.openApp('messages'),
                 })
           )
         )
       : Text({ text: '下一步可以把文件放进来，或者先做一个 Agent。' }),
     elRow([
-      Button({ text: '去文件', onClick: () => page.commit(go(page.state.data, 'files')) }),
-      Button({ text: '做 Agent', onClick: () => page.commit(go(page.state.data, 'agent')) }),
+      Button({ text: '打开磁盘', onClick: () => page.openApp('files') }),
+      Button({ text: '做 Agent', onClick: () => page.openApp('agent') }),
     ]),
     Text({ type: 'secondary', text: '要读的' }),
     Text({ type: 'muted', text: '还没有要读的。' }),
@@ -431,8 +599,8 @@ function files(page, state) {
     : childrenOf(state, state.folderId);
   const open = state.files.find((file) => file.id === state.openFileId);
   return Card(
-    { title: '文件' },
-    Text({ type: 'secondary', text: '这是你的文件，记在这台电脑上。' }),
+    { title: '磁盘' },
+    Text({ type: 'secondary', text: '磁盘上是你的文件，记在这台电脑上。' }),
     formError(state),
     elRow(
       crumbs(state).map((crumb) =>
@@ -819,6 +987,7 @@ function computer(page, state) {
     Text({ text: state.ready ? '工作区已就绪。' : '工作区还没准备好。' }),
     state.kernel?.summary ? Text({ text: state.kernel.summary }) : null,
     Text({ type: 'secondary', text: '名字、密码、文件、消息、Agent 和模型都记在这台电脑上。' }),
+    Text({ type: 'secondary', text: '各服务是否在听，打开桌面上的网关。' }),
     Text({ type: 'secondary', text: '钥匙文件夹只记下路径。' }),
     formError(state),
     state.notice ? Text({ text: state.notice }) : null,
