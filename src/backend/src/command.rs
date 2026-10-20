@@ -379,7 +379,14 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["version", "commands", "server", "kernel", "identity"]
+            vec![
+                "version",
+                "commands",
+                "server",
+                "kernel",
+                "identity",
+                "workspace"
+            ]
         );
         let server = &tree["commands"][2];
         assert_eq!(server["surface"], "cli");

@@ -59,7 +59,14 @@ static ROOT: Command = Command {
     summary: "本机 BuckyOS 无界面内核的命令壳",
     surface: Surface::Both,
     args: &[],
-    children: &[VERSION, COMMANDS, SERVER, KERNEL, IDENTITY],
+    children: &[
+        VERSION,
+        COMMANDS,
+        SERVER,
+        KERNEL,
+        IDENTITY,
+        crate::workspace::WORKSPACE,
+    ],
     run: None,
 };
 

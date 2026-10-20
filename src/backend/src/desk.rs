@@ -102,7 +102,7 @@ fn store_file(desk: &DeskFile) -> Result<(), ()> {
     Ok(())
 }
 
-fn restrict_to_owner(path: &Path) -> Result<(), ()> {
+pub(crate) fn restrict_to_owner(path: &Path) -> Result<(), ()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -251,11 +251,20 @@ pub fn password_report(current: &str, next: &str) -> Report {
     }
 }
 
-pub fn reset_report() -> Report {
-    match remove_file() {
-        Ok(()) => Report::ok("工作区已重置。").with_data(empty_data()),
-        Err(()) => Report::fail("身份写不进去。"),
+pub fn require_ready() -> Result<String, Report> {
+    match load_file() {
+        Ok(Some(desk)) if desk.phase == "ready" => Ok(desk.name),
+        Ok(Some(_)) => Err(Report::fail("上次没有完成。")),
+        Ok(None) => Err(Report::fail("尚未写入本机身份。")),
+        Err(()) => Err(Report::fail("工作区暂时打不开。")),
     }
+}
+
+pub fn reset_report() -> Report {
+    if remove_file().is_err() || crate::workspace::wipe().is_err() {
+        return Report::fail("身份写不进去。");
+    }
+    Report::ok("工作区已重置。").with_data(empty_data())
 }
 
 pub fn kernel_status_report() -> Report {

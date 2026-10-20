@@ -2,6 +2,7 @@ mod catalog;
 mod command;
 mod desk;
 mod http;
+mod workspace;
 
 use crate::command::{dispatch, CommandError, Surface};
 use std::env;
