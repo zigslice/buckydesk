@@ -1,5 +1,6 @@
 mod catalog;
 mod command;
+mod desk;
 mod http;
 
 use crate::command::{dispatch, CommandError, Surface};

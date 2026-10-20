@@ -1,15 +1,16 @@
 import { Component } from '/gd5/src/engine/index.js';
 import { Button, Card, Checkbox, Field, Input, Text, TextArea, Title, loadUi } from '/gd5/src/ui/index.js';
 import { el } from '/gd5/src/ui/util.js';
+import { exec } from '../workspace/api.js';
 import {
   addFile,
   addFolder,
   addMember,
   addPerson,
+  applyBoot,
   armReset,
   askSummary,
   beginSetup,
-  changePassword,
   chooseReach,
   closeFile,
   connectModel,
@@ -20,16 +21,17 @@ import {
   disconnectModel,
   dismissWork,
   editWork,
+  enterDesk,
   finishSetup,
   folders,
   go,
   keepWork,
   loadState,
-  login,
   logout,
   maskKey,
   moveFile,
   newWork,
+  nextPasswordError,
   noteOtherComputer,
   openFile,
   openFolder,
@@ -66,10 +68,20 @@ export class WorkspacePage extends Component {
 
   async componentDidMount() {
     await loadUi();
-    this.state.data = loadState();
+    const local = loadState();
+    try {
+      const identity = await exec(['identity', 'status']);
+      const kernel = await exec(['kernel', 'status']);
+      const next = applyBoot(local, identity, kernel);
+      saveState(next);
+      this.state.data = next;
+    } catch {
+      this.state.data = { ...local, phase: 'unavailable', formError: '', notice: '' };
+    }
   }
 
   componentDidUnMount() {
+    this._prep = (this._prep || 0) + 1;
     clearTimeout(this._timer);
   }
 
@@ -85,10 +97,160 @@ export class WorkspacePage extends Component {
 
   prepare() {
     clearTimeout(this._timer);
+    this._prep = (this._prep || 0) + 1;
+    const token = this._prep;
     this._timer = setTimeout(() => {
-      if (!this.state.data || this.state.data.phase !== 'preparing') return;
-      this.commit(finishSetup(this.state.data));
+      if (token !== this._prep) return;
+      void this.finishPreparing();
     }, 700);
+  }
+
+  async start() {
+    if (this._setup) return;
+    this._setup = true;
+    try {
+      const input = {
+        name: this.field('name'),
+        password: this.field('password'),
+        confirm: this.field('confirm'),
+        keyFolder: this.field('keyFolder'),
+      };
+      const next = beginSetup(this.state.data, input);
+      if (next.phase !== 'preparing') {
+        next.welcomeDraft = input;
+        this.commit(next);
+        return;
+      }
+      this.commit(next);
+      let report;
+      try {
+        report = await exec([
+          'identity',
+          'activate',
+          '--name',
+          input.name.trim(),
+          '--password',
+          input.password,
+          '--key-folder',
+          input.keyFolder.trim(),
+        ]);
+      } catch {
+        this.commit({ ...this.state.data, phase: 'unavailable' });
+        return;
+      }
+      if (!report.ok) {
+        const phase = report.summary === '上次没有完成。' ? 'partial' : 'welcome';
+        this.commit({
+          ...this.state.data,
+          phase,
+          formError: report.summary,
+          welcomeDraft: phase === 'welcome' ? input : undefined,
+        });
+        return;
+      }
+      this.prepare();
+    } finally {
+      this._setup = false;
+    }
+  }
+
+  continueSetup() {
+    this.commit(resumeSetup(this.state.data));
+    this.prepare();
+  }
+
+  async finishPreparing() {
+    if (!this.state.data || this.state.data.phase !== 'preparing') return;
+    let report;
+    try {
+      report = await exec(['identity', 'finish']);
+    } catch {
+      this.commit({ ...this.state.data, phase: 'unavailable' });
+      return;
+    }
+    if (!this.state.data || this.state.data.phase !== 'preparing') return;
+    if (!report.ok) {
+      this.commit({
+        ...this.state.data,
+        phase: report.summary === '还没有开始准备。' ? 'welcome' : 'partial',
+        formError: report.summary,
+      });
+      return;
+    }
+    const next = finishSetup(this.state.data);
+    next.account = {
+      name: report.data.name || next.account?.name,
+      keyFolder: report.data.keyFolder || next.account?.keyFolder,
+    };
+    next.ready = true;
+    this.commit(next);
+  }
+
+  async signIn() {
+    let report;
+    try {
+      report = await exec(['identity', 'login', '--password', this.field('password')]);
+    } catch {
+      this.commit({ ...this.state.data, formError: '工作区暂时打不开。' });
+      return;
+    }
+    if (!report.ok) {
+      this.commit({ ...this.state.data, formError: report.summary || '密码不正确。' });
+      return;
+    }
+    this.commit(enterDesk(this.state.data));
+  }
+
+  async updatePassword() {
+    const input = {
+      current: this.field('currentPassword'),
+      next: this.field('nextPassword'),
+      confirm: this.field('nextConfirm'),
+    };
+    const error = nextPasswordError(input);
+    if (error) {
+      this.commit({ ...this.state.data, formError: error });
+      return;
+    }
+    let report;
+    try {
+      report = await exec([
+        'identity',
+        'password',
+        '--current',
+        input.current,
+        '--next',
+        input.next,
+      ]);
+    } catch {
+      this.commit({ ...this.state.data, formError: '工作区暂时打不开。' });
+      return;
+    }
+    if (!report.ok) {
+      this.commit({ ...this.state.data, formError: report.summary });
+      return;
+    }
+    this.commit({ ...this.state.data, formError: '', notice: '密码已更新。' });
+  }
+
+  async resetDesk() {
+    try {
+      const report = await exec(['identity', 'reset']);
+      if (!report.ok) {
+        this.commit({ ...this.state.data, formError: report.summary });
+        return;
+      }
+      const kernel = await exec(['kernel', 'status']);
+      const next = resetAll();
+      next.kernel = {
+        attached: Boolean(kernel.data?.attached),
+        summary: kernel.summary || '',
+      };
+      if (next.kernel.attached) next.phase = 'occupied';
+      this.commit(next);
+    } catch {
+      this.commit({ ...this.state.data, formError: '工作区暂时打不开。' });
+    }
   }
 
   render() {
@@ -100,6 +262,8 @@ export class WorkspacePage extends Component {
 }
 
 function screen(page, state) {
+  if (state.phase === 'unavailable') return waiting('工作区暂时打不开。');
+  if (state.phase === 'occupied') return occupied();
   if (state.phase === 'welcome') return welcome(page, state);
   if (state.phase === 'preparing') return waiting('正在准备你的工作区。');
   if (state.phase === 'partial') return partial(page);
@@ -113,7 +277,7 @@ function welcome(page, state) {
     Text({ text: '这台电脑会成为你的工作区。' }),
     Text({
       type: 'secondary',
-      text: '名字、密码和钥匙的位置先记在这个浏览器里。写到电脑上的那一步还没有做。',
+      text: '名字和密码会记在这台电脑上。钥匙文件夹只记下路径。',
     }),
     formError(state),
     stack(
@@ -131,18 +295,7 @@ function welcome(page, state) {
       Button({
         type: 'primary',
         text: '开始',
-        onClick: () => {
-          const input = {
-            name: page.field('name'),
-            password: page.field('password'),
-            confirm: page.field('confirm'),
-            keyFolder: page.field('keyFolder'),
-          };
-          const next = beginSetup(page.state.data, input);
-          if (next.phase !== 'preparing') next.welcomeDraft = input;
-          page.commit(next);
-          if (next.phase === 'preparing') page.prepare();
-        },
+        onClick: () => page.start(),
       })
     )
   );
@@ -159,12 +312,13 @@ function partial(page) {
     Button({
       type: 'primary',
       text: '继续准备',
-      onClick: () => {
-        page.commit(resumeSetup(page.state.data));
-        page.prepare();
-      },
+      onClick: () => page.continueSetup(),
     })
   );
+}
+
+function occupied() {
+  return Card({ title: 'BuckyDesk' }, Text({ text: '这台电脑上已经有一套 BuckyOS 在运行。' }));
 }
 
 function signIn(page, state) {
@@ -177,7 +331,7 @@ function signIn(page, state) {
       Button({
         type: 'primary',
         text: '进入',
-        onClick: () => page.commit(login(page.state.data, page.field('password'))),
+        onClick: () => page.signIn(),
       })
     )
   );
@@ -252,7 +406,8 @@ function today(page, state) {
       Button({ text: '做 Agent', onClick: () => page.commit(go(page.state.data, 'agent')) }),
     ]),
     Text({ type: 'secondary', text: '要读的' }),
-    Text({ type: 'muted', text: '还没有要读的。' })
+    Text({ type: 'muted', text: '还没有要读的。' }),
+    state.kernel?.summary ? Text({ type: 'secondary', text: state.kernel.summary }) : null
   );
 }
 
@@ -597,7 +752,9 @@ function computer(page, state) {
   return Card(
     { title: '这台电脑' },
     Text({ text: state.ready ? '工作区已就绪。' : '工作区还没准备好。' }),
-    Text({ type: 'secondary', text: '这些都记在这个浏览器里，还没有写进电脑。' }),
+    state.kernel?.summary ? Text({ text: state.kernel.summary }) : null,
+    Text({ type: 'secondary', text: '名字和密码记在这台电脑上。文件、消息、Agent 和模型记在这个浏览器里。' }),
+    Text({ type: 'secondary', text: '钥匙文件夹只记下路径。' }),
     formError(state),
     state.notice ? Text({ text: state.notice }) : null,
     Text({ text: `名字：${state.account.name}` }),
@@ -621,14 +778,7 @@ function computer(page, state) {
       Field({ label: '再输入一次' }, Input({ id: 'nextConfirm', type: 'password' })),
       Button({
         text: '更新密码',
-        onClick: () =>
-          page.commit(
-            changePassword(page.state.data, {
-              current: page.field('currentPassword'),
-              next: page.field('nextPassword'),
-              confirm: page.field('nextConfirm'),
-            })
-          ),
+        onClick: () => page.updatePassword(),
       })
     ),
     Text({ type: 'secondary', text: '语言' }),
@@ -683,14 +833,14 @@ function computer(page, state) {
         ? Button({
             type: 'primary',
             text: '确认重置',
-            onClick: () => page.commit(resetAll()),
+            onClick: () => page.resetDesk(),
           })
         : Button({ text: '重置', onClick: () => page.commit(armReset(page.state.data, true)) }),
     ]),
     state.resetArmed
       ? Text({
           type: 'danger',
-          text: '重置会清掉这个浏览器里的文件、消息、Agent、工作和身份。退出只是离开，这些都还在。',
+          text: '重置会清掉这台电脑上记下的身份，以及这个浏览器里的文件、消息、Agent 和工作。退出只是离开，这些都还在。',
         })
       : null
   );

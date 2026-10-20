@@ -24,6 +24,31 @@ const GD5: Arg = Arg {
     takes_value: true,
     summary: "gd5 源码目录，默认 src/frontend/vendor/gd5",
 };
+const NAME: Arg = Arg {
+    name: "name",
+    takes_value: true,
+    summary: "你的名字",
+};
+const PASSWORD: Arg = Arg {
+    name: "password",
+    takes_value: true,
+    summary: "管理密码",
+};
+const KEY_FOLDER: Arg = Arg {
+    name: "key-folder",
+    takes_value: true,
+    summary: "钥匙所在的文件夹",
+};
+const CURRENT: Arg = Arg {
+    name: "current",
+    takes_value: true,
+    summary: "现在的密码",
+};
+const NEXT: Arg = Arg {
+    name: "next",
+    takes_value: true,
+    summary: "新密码",
+};
 
 pub fn root() -> &'static Command {
     &ROOT
@@ -103,16 +128,23 @@ static KERNEL_STOP: Command = Command {
 
 static IDENTITY: Command = Command {
     name: "identity",
-    summary: "本机 Zone 身份",
+    summary: "这台电脑上的工作区身份",
     surface: Surface::Both,
     args: &[],
-    children: &[IDENTITY_STATUS, IDENTITY_ACTIVATE],
+    children: &[
+        IDENTITY_STATUS,
+        IDENTITY_ACTIVATE,
+        IDENTITY_FINISH,
+        IDENTITY_LOGIN,
+        IDENTITY_PASSWORD,
+        IDENTITY_RESET,
+    ],
     run: None,
 };
 
 static IDENTITY_STATUS: Command = Command {
     name: "status",
-    summary: "查看身份文件是否已写入",
+    summary: "查看工作区身份",
     surface: Surface::Both,
     args: &[],
     children: &[],
@@ -121,11 +153,47 @@ static IDENTITY_STATUS: Command = Command {
 
 static IDENTITY_ACTIVATE: Command = Command {
     name: "activate",
-    summary: "写本机身份并交给内核",
+    summary: "记下名字、密码和钥匙文件夹，开始准备",
+    surface: Surface::Both,
+    args: &[NAME, PASSWORD, KEY_FOLDER],
+    children: &[],
+    run: Some(identity_activate),
+};
+
+static IDENTITY_FINISH: Command = Command {
+    name: "finish",
+    summary: "把准备中的工作区标成就绪",
     surface: Surface::Both,
     args: &[],
     children: &[],
-    run: Some(identity_activate),
+    run: Some(identity_finish),
+};
+
+static IDENTITY_LOGIN: Command = Command {
+    name: "login",
+    summary: "用管理密码进入工作区",
+    surface: Surface::Both,
+    args: &[PASSWORD],
+    children: &[],
+    run: Some(identity_login),
+};
+
+static IDENTITY_PASSWORD: Command = Command {
+    name: "password",
+    summary: "更换管理密码",
+    surface: Surface::Both,
+    args: &[CURRENT, NEXT],
+    children: &[],
+    run: Some(identity_password),
+};
+
+static IDENTITY_RESET: Command = Command {
+    name: "reset",
+    summary: "删除这台电脑上记下的工作区身份",
+    surface: Surface::Both,
+    args: &[],
+    children: &[],
+    run: Some(identity_reset),
 };
 
 fn version(_: &Invocation) -> Result<Report, CommandError> {
@@ -168,27 +236,51 @@ fn server(invocation: &Invocation) -> Result<Report, CommandError> {
 }
 
 fn kernel_status(_: &Invocation) -> Result<Report, CommandError> {
-    let mut data = Map::new();
-    data.insert("attached".to_string(), Value::Bool(false));
-    Ok(Report::ok("内核尚未附着。").with_data(data))
+    Ok(crate::desk::with_desk(crate::desk::kernel_status_report))
 }
 
 fn kernel_start(_: &Invocation) -> Result<Report, CommandError> {
-    Ok(Report::fail("内核启动尚未实现。"))
+    Ok(Report::fail("这台电脑上还没有可拉起的内核。"))
 }
 
 fn kernel_stop(_: &Invocation) -> Result<Report, CommandError> {
-    Ok(Report::fail("内核停止尚未实现。"))
+    Ok(Report::fail("这台电脑上还没有可拉起的内核。"))
 }
 
 fn identity_status(_: &Invocation) -> Result<Report, CommandError> {
-    let mut data = Map::new();
-    data.insert("configured".to_string(), Value::Bool(false));
-    Ok(Report::ok("尚未写入本机身份。").with_data(data))
+    Ok(crate::desk::with_desk(crate::desk::identity_status_report))
 }
 
-fn identity_activate(_: &Invocation) -> Result<Report, CommandError> {
-    Ok(Report::fail("身份写入尚未实现。"))
+fn identity_activate(invocation: &Invocation) -> Result<Report, CommandError> {
+    let name = invocation.value("name").unwrap_or("");
+    let password = invocation.value("password").unwrap_or("");
+    let key_folder = invocation.value("key-folder").unwrap_or("");
+    Ok(crate::desk::with_desk(|| {
+        crate::desk::activate_report(name, password, key_folder)
+    }))
+}
+
+fn identity_finish(_: &Invocation) -> Result<Report, CommandError> {
+    Ok(crate::desk::with_desk(crate::desk::finish_report))
+}
+
+fn identity_login(invocation: &Invocation) -> Result<Report, CommandError> {
+    let password = invocation.value("password").unwrap_or("").to_string();
+    Ok(crate::desk::with_desk(|| {
+        crate::desk::login_report(&password)
+    }))
+}
+
+fn identity_password(invocation: &Invocation) -> Result<Report, CommandError> {
+    let current = invocation.value("current").unwrap_or("").to_string();
+    let next = invocation.value("next").unwrap_or("").to_string();
+    Ok(crate::desk::with_desk(|| {
+        crate::desk::password_report(&current, &next)
+    }))
+}
+
+fn identity_reset(_: &Invocation) -> Result<Report, CommandError> {
+    Ok(crate::desk::with_desk(crate::desk::reset_report))
 }
 
 fn frontend_dir(invocation: &Invocation) -> PathBuf {

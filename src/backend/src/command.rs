@@ -296,13 +296,55 @@ mod tests {
     }
 
     #[test]
-    fn kernel_status_is_a_stub() {
-        let report = dispatch(&argv("kernel status"), Surface::Http).unwrap();
-        assert!(report.ok);
-        assert_eq!(
-            report.data.get("attached").and_then(Value::as_bool),
-            Some(false)
-        );
+    fn kernel_status_probes_the_configured_port() {
+        let dir = std::env::temp_dir().join(format!("buckydesk-cmd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::desk::isolate(&dir, "127.0.0.1:1", || {
+            let report = dispatch(&argv("kernel status"), Surface::Http).unwrap();
+            assert!(report.ok);
+            assert_eq!(
+                report.data.get("attached").and_then(Value::as_bool),
+                Some(false)
+            );
+            assert_eq!(report.summary, "内核还没有在这台电脑上运行。");
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn identity_activate_is_refused_twice() {
+        let dir = std::env::temp_dir().join(format!(
+            "buckydesk-id-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::desk::isolate(&dir, "127.0.0.1:1", || {
+            let activate = [
+                "identity",
+                "activate",
+                "--name",
+                "alice",
+                "--password",
+                "12345678",
+                "--key-folder",
+                "keys",
+            ]
+            .map(str::to_string)
+            .to_vec();
+            let first = dispatch(&activate, Surface::Http).unwrap();
+            assert!(first.ok);
+            assert!(first.data.get("passwordHash").is_none());
+            let second = dispatch(&activate, Surface::Http).unwrap();
+            assert!(!second.ok);
+            assert_eq!(second.summary, "上次没有完成。");
+            let started = dispatch(&argv("kernel start"), Surface::Cli).unwrap();
+            assert!(!started.ok);
+            assert_eq!(started.summary, "这台电脑上还没有可拉起的内核。");
+        });
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -345,5 +387,15 @@ mod tests {
         let status = &tree["commands"][3]["commands"][0];
         assert_eq!(status["path"], serde_json::json!(["kernel", "status"]));
         assert_eq!(status["surface"], "both");
+        let identity: Vec<&str> = tree["commands"][4]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            identity,
+            vec!["status", "activate", "finish", "login", "password", "reset"]
+        );
     }
 }

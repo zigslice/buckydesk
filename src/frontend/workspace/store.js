@@ -26,6 +26,7 @@ export function initialState() {
     otherComputer: '',
     language: '中文',
     resetArmed: false,
+    kernel: { attached: false, summary: '' },
   };
 }
 
@@ -41,7 +42,7 @@ export function loadState() {
 }
 
 export function saveState(state) {
-  localStorage.setItem(KEY, JSON.stringify(state));
+  localStorage.setItem(KEY, JSON.stringify(withoutSecrets(state)));
 }
 
 function normalize(data) {
@@ -52,10 +53,82 @@ function normalize(data) {
     next.files = base.files;
   }
   if (next.phase === 'preparing') next.phase = 'partial';
+  if (next.account) next.account = { name: next.account.name, keyFolder: next.account.keyFolder || '' };
+  if (next.welcomeDraft) {
+    next.welcomeDraft = {
+      name: next.welcomeDraft.name || '',
+      keyFolder: next.welcomeDraft.keyFolder || '',
+    };
+  }
   if (['desk', 'login', 'partial'].includes(next.phase) && !next.account?.name) {
     return base;
   }
   return next;
+}
+
+function withoutSecrets(state) {
+  const next = { ...state };
+  if (next.account) {
+    next.account = { name: next.account.name, keyFolder: next.account.keyFolder || '' };
+  }
+  if (next.welcomeDraft) {
+    next.welcomeDraft = {
+      name: next.welcomeDraft.name || '',
+      keyFolder: next.welcomeDraft.keyFolder || '',
+    };
+  }
+  return next;
+}
+
+export function applyBoot(local, identity, kernel) {
+  const stored = withoutSecrets(local && typeof local === 'object' ? { ...initialState(), ...local } : initialState());
+  const kernelState = {
+    attached: Boolean(kernel?.data?.attached),
+    summary: typeof kernel?.summary === 'string' ? kernel.summary : '',
+  };
+  if (!identity || identity.ok !== true) {
+    return { ...stored, phase: 'unavailable', kernel: kernelState, formError: '', notice: '' };
+  }
+  const data = identity.data || {};
+  if (!data.configured) {
+    return {
+      ...initialState(),
+      files: stored.files,
+      people: stored.people,
+      members: stored.members,
+      messages: stored.messages,
+      agents: stored.agents,
+      works: stored.works,
+      model: stored.model,
+      reach: stored.reach,
+      otherComputer: stored.otherComputer,
+      language: stored.language,
+      pickedFolders: stored.pickedFolders,
+      agentDraft: stored.agentDraft,
+      phase: kernelState.attached ? 'occupied' : 'welcome',
+      account: null,
+      ready: false,
+      kernel: kernelState,
+      formError: '',
+      notice: '',
+    };
+  }
+  const account = { name: data.name || '', keyFolder: data.keyFolder || '' };
+  const others = Array.isArray(stored.members)
+    ? stored.members.filter((member) => member && member.id !== 'owner')
+    : [];
+  return {
+    ...stored,
+    account,
+    members: [{ id: 'owner', name: account.name }, ...others],
+    kernel: kernelState,
+    ready: data.phase === 'ready',
+    phase: data.phase === 'partial' ? 'partial' : 'login',
+    formError: '',
+    notice: '',
+    place: 'today',
+    resetArmed: false,
+  };
 }
 
 function uid(prefix) {
@@ -75,7 +148,7 @@ export function beginSetup(state, input) {
     notice: '',
     phase: 'preparing',
     ready: false,
-    account: { name, password: input.password, keyFolder },
+    account: { name, keyFolder },
     members: [{ id: 'owner', name }],
   };
 }
@@ -90,10 +163,7 @@ export function resumeSetup(state) {
   return { ...state, phase: 'preparing', formError: '' };
 }
 
-export function login(state, password) {
-  if (!state.account || password !== state.account.password) {
-    return { ...state, formError: '密码不正确。' };
-  }
+export function enterDesk(state) {
   return { ...state, phase: 'desk', place: 'today', ready: true, formError: '', notice: '' };
 }
 
@@ -485,18 +555,10 @@ export function noteOtherComputer(state, address) {
   return { ...state, otherComputer: trimmed, formError: '', notice: '已记下。那台电脑准备好之后，在这里继续。' };
 }
 
-export function changePassword(state, input) {
-  if (!state.account || input.current !== state.account.password) {
-    return { ...state, formError: '现在的密码不正确。' };
-  }
-  if (input.next !== input.confirm) return { ...state, formError: '两次输入的密码不一致' };
-  if (input.next.length < 8) return { ...state, formError: '密码长度不能小于 8 位' };
-  return {
-    ...state,
-    formError: '',
-    notice: '密码已更新。',
-    account: { ...state.account, password: input.next },
-  };
+export function nextPasswordError(input) {
+  if (input.next !== input.confirm) return '两次输入的密码不一致';
+  if (!input.next || input.next.length < 8) return '密码长度不能小于 8 位';
+  return '';
 }
 
 export function setLanguage(state, language) {
