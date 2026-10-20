@@ -96,6 +96,8 @@ BuckyOSApp 仓库里的 `doc/目录结构.md` 还描述了 `$BUCKYOS_ROOT/local/
 
 ## 桌面壳和 Web 桌面怎么配合
 
+这一节记录上游两个客户端的关系。BuckyDesk 不走这条路径，页面约定见 [非 UI 内核](非ui内核.md)。
+
 一次完整的本机使用会经过三层 UI：
 
 ```text
