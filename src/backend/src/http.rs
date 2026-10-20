@@ -434,7 +434,7 @@ mod tests {
             "GET /app/main.js HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
         );
         assert!(page.starts_with("HTTP/1.1 200"));
-        assert!(body_of(&page).contains("ShellPage"));
+        assert!(body_of(&page).contains("WorkspacePage"));
         assert!(page.contains("text/javascript"));
 
         let engine = exchange(
