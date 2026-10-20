@@ -222,19 +222,28 @@
   align-items: center;
 }
 
-.os .entry {
+.os .entry,
+.os .service {
   display: flex;
   justify-content: space-between;
   gap: 12px;
   align-items: center;
-  padding: 10px 0;
+  padding: 6px 0;
   border-bottom: 1px solid var(--gd-border);
 }
 
 .os .entry .meta {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
+  min-width: 0;
+}
+
+.os .service .meta {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 10px;
   min-width: 0;
 }
 

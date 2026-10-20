@@ -515,8 +515,9 @@ function place(page, state) {
 function gateway(page, state) {
   const services = Array.isArray(state.services) ? state.services : [];
   const attached = Boolean(state.kernel?.attached);
-  return Card(
-    { title: '网关' },
+  return el(
+    'div',
+    { className: 'stack' },
     Text({
       text: attached
         ? '网关已经在这台电脑上运行。对内核的调用从 127.0.0.1:3180 进去。'
@@ -528,9 +529,15 @@ function gateway(page, state) {
     }),
     services.length
       ? services.map((service) =>
-          entry(
-            service.name,
-            `${service.role} · ${service.port}`,
+          el(
+            'div',
+            { className: 'service' },
+            el(
+              'div',
+              { className: 'meta' },
+              Text({ text: `${service.name} · ${service.port}` }),
+              Text({ type: 'secondary', text: service.role })
+            ),
             el('span', {
               className: service.listening ? 'live-tag' : 'quiet-tag',
               text: service.listening ? '在听' : '没在听',
