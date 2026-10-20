@@ -102,7 +102,7 @@ static KERNEL: Command = Command {
     summary: "无界面内核进程",
     surface: Surface::Both,
     args: &[],
-    children: &[KERNEL_STATUS, KERNEL_START, KERNEL_STOP],
+    children: &[KERNEL_STATUS, KERNEL_SERVICES, KERNEL_START, KERNEL_STOP],
     run: None,
 };
 
@@ -113,6 +113,15 @@ static KERNEL_STATUS: Command = Command {
     args: &[],
     children: &[],
     run: Some(kernel_status),
+};
+
+static KERNEL_SERVICES: Command = Command {
+    name: "services",
+    summary: "查看内核服务是否在听",
+    surface: Surface::Both,
+    args: &[],
+    children: &[],
+    run: Some(kernel_services),
 };
 
 static KERNEL_START: Command = Command {
@@ -244,6 +253,10 @@ fn server(invocation: &Invocation) -> Result<Report, CommandError> {
 
 fn kernel_status(_: &Invocation) -> Result<Report, CommandError> {
     Ok(crate::desk::with_desk(crate::desk::kernel_status_report))
+}
+
+fn kernel_services(_: &Invocation) -> Result<Report, CommandError> {
+    Ok(crate::desk::with_desk(crate::desk::services_report))
 }
 
 fn kernel_start(_: &Invocation) -> Result<Report, CommandError> {

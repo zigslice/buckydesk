@@ -27,6 +27,8 @@ export function initialState() {
     language: '中文',
     resetArmed: false,
     kernel: { attached: false, summary: '' },
+    openApps: [],
+    services: [],
   };
 }
 
@@ -53,6 +55,8 @@ function normalize(data) {
     next.files = base.files;
   }
   if (next.phase === 'preparing') next.phase = 'partial';
+  if (!Array.isArray(next.openApps)) next.openApps = [];
+  if (!Array.isArray(next.services)) next.services = [];
   if (next.account) next.account = { name: next.account.name, keyFolder: next.account.keyFolder || '' };
   if (next.welcomeDraft) {
     next.welcomeDraft = {
@@ -171,7 +175,15 @@ export function enterDesk(state) {
 }
 
 export function logout(state) {
-  return { ...state, phase: 'login', place: 'today', formError: '', notice: '', resetArmed: false };
+  return {
+    ...state,
+    phase: 'login',
+    place: 'today',
+    openApps: [],
+    formError: '',
+    notice: '',
+    resetArmed: false,
+  };
 }
 
 export function go(state, place) {
@@ -184,6 +196,21 @@ export function go(state, place) {
     openFileId: place === 'files' ? state.openFileId : null,
     resetArmed: false,
   };
+}
+
+function rememberApp(state, id) {
+  const open = Array.isArray(state.openApps) ? state.openApps : [];
+  return open.includes(id) ? open : [...open, id];
+}
+
+export function launchApp(state, id) {
+  return { ...go(state, id), openApps: rememberApp(state, id) };
+}
+
+export function closeApp(state, id) {
+  const openApps = (Array.isArray(state.openApps) ? state.openApps : []).filter((item) => item !== id);
+  const place = state.place === id ? 'today' : state.place;
+  return { ...go(state, place), openApps };
 }
 
 export function childrenOf(state, parentId) {
@@ -388,7 +415,7 @@ export function dismissWork(state, id) {
 }
 
 export function openWork(state, id) {
-  return { ...state, place: 'work', openWorkId: id, formError: '' };
+  return { ...state, place: 'work', openWorkId: id, formError: '', openApps: rememberApp(state, 'work') };
 }
 
 export function editWork(state, id, body) {

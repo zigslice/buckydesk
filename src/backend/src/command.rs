@@ -296,6 +296,45 @@ mod tests {
     }
 
     #[test]
+    fn kernel_services_reports_whether_the_gateway_is_listening() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let dir = std::env::temp_dir().join(format!("buckydesk-svc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::desk::isolate(&dir, &address.to_string(), || {
+            let report = dispatch(&argv("kernel services"), Surface::Http).unwrap();
+            assert!(report.ok);
+            assert_eq!(report.summary, "网关已经在这台电脑上运行。");
+            assert_eq!(
+                report.data.get("attached").and_then(Value::as_bool),
+                Some(true)
+            );
+            let services = report
+                .data
+                .get("services")
+                .and_then(Value::as_array)
+                .unwrap();
+            assert_eq!(services.len(), 8);
+            let gateway = services
+                .iter()
+                .find(|item| item.get("id").and_then(Value::as_str) == Some("gateway"))
+                .unwrap();
+            assert_eq!(
+                gateway.get("listening").and_then(Value::as_bool),
+                Some(true)
+            );
+            assert_eq!(gateway.get("port").and_then(Value::as_u64), Some(3180));
+            let node = services
+                .iter()
+                .find(|item| item.get("id").and_then(Value::as_str) == Some("node"))
+                .unwrap();
+            assert_eq!(node.get("port").and_then(Value::as_u64), Some(3181));
+        });
+        drop(listener);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn kernel_status_probes_the_configured_port() {
         let dir = std::env::temp_dir().join(format!("buckydesk-cmd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

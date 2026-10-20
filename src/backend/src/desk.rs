@@ -9,6 +9,7 @@ use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::thread;
 use std::time::Duration;
 
 const HASH_SUFFIX: &[u8] = b".buckyos";
@@ -123,12 +124,77 @@ fn remove_file() -> Result<(), ()> {
     }
 }
 
+struct KernelService {
+    id: &'static str,
+    name: &'static str,
+    role: &'static str,
+    port: u16,
+}
+
+const SERVICES: &[KernelService] = &[
+    KernelService {
+        id: "gateway",
+        name: "网关",
+        role: "对内核的调用从这里进去",
+        port: 3180,
+    },
+    KernelService {
+        id: "node",
+        name: "节点守护",
+        role: "安装、启动和停止本机服务",
+        port: 3181,
+    },
+    KernelService {
+        id: "config",
+        name: "系统配置",
+        role: "记下这台电脑的系统状态",
+        port: 3200,
+    },
+    KernelService {
+        id: "verify",
+        name: "登录",
+        role: "校验谁能进入",
+        port: 3300,
+    },
+    KernelService {
+        id: "tasks",
+        name: "任务",
+        role: "正在进行的任务",
+        port: 3380,
+    },
+    KernelService {
+        id: "scheduler",
+        name: "调度",
+        role: "决定这台电脑该跑什么",
+        port: 3400,
+    },
+    KernelService {
+        id: "kmsg",
+        name: "消息队列",
+        role: "内核里排队的消息",
+        port: 4030,
+    },
+    KernelService {
+        id: "workflow",
+        name: "工作流",
+        role: "按步骤跑完的工作",
+        port: 4070,
+    },
+];
+
 pub fn kernel_endpoint() -> String {
     std::env::var("BUCKYDESK_KERNEL").unwrap_or_else(|_| "127.0.0.1:3180".to_string())
 }
 
-pub fn kernel_attached() -> bool {
+fn kernel_host() -> String {
     let endpoint = kernel_endpoint();
+    match endpoint.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && port.parse::<u16>().is_ok() => host.to_string(),
+        _ => "127.0.0.1".to_string(),
+    }
+}
+
+fn probe_addr(endpoint: &str) -> bool {
     let Ok(mut addresses) = endpoint.to_socket_addrs() else {
         return false;
     };
@@ -136,6 +202,57 @@ pub fn kernel_attached() -> bool {
         return false;
     };
     TcpStream::connect_timeout(&address, PROBE_TIMEOUT).is_ok()
+}
+
+pub fn kernel_attached() -> bool {
+    probe_addr(&kernel_endpoint())
+}
+
+pub fn services_report() -> Report {
+    let host = kernel_host();
+    let gateway = kernel_endpoint();
+    let listening: Vec<bool> = thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(SERVICES.len());
+        for service in SERVICES {
+            let host = host.clone();
+            let gateway = gateway.clone();
+            handles.push(scope.spawn(move || {
+                let endpoint = if service.id == "gateway" {
+                    gateway
+                } else {
+                    format!("{host}:{}", service.port)
+                };
+                probe_addr(&endpoint)
+            }));
+        }
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or(false))
+            .collect()
+    });
+    let attached = listening.first().copied().unwrap_or(false);
+    let services = SERVICES
+        .iter()
+        .zip(listening)
+        .map(|(service, up)| {
+            let mut item = Map::new();
+            item.insert("id".into(), Value::String(service.id.into()));
+            item.insert("name".into(), Value::String(service.name.into()));
+            item.insert("role".into(), Value::String(service.role.into()));
+            item.insert("port".into(), Value::from(service.port));
+            item.insert("listening".into(), Value::Bool(up));
+            Value::Object(item)
+        })
+        .collect();
+    let mut data = Map::new();
+    data.insert("attached".into(), Value::Bool(attached));
+    data.insert("services".into(), Value::Array(services));
+    let summary = if attached {
+        "网关已经在这台电脑上运行。"
+    } else {
+        "网关还没有在这台电脑上运行。"
+    };
+    Report::ok(summary).with_data(data)
 }
 
 fn public_data(desk: &DeskFile) -> Map<String, Value> {
