@@ -77,7 +77,7 @@ static CLOUD: Command = Command {
     summary: "用域名从公网打开这个 Zone",
     surface: Surface::Both,
     args: &[],
-    children: &[CLOUD_STATUS, CLOUD_DOMAIN],
+    children: &[CLOUD_STATUS, CLOUD_DOMAIN, CLOUD_SERVE],
     run: None,
 };
 
@@ -130,6 +130,21 @@ static CLOUD_DOMAIN: Command = Command {
     args: &[ZONE_DOMAIN],
     children: &[],
     run: Some(cloud_domain),
+};
+
+const CLOUD_BIND: Arg = Arg {
+    name: "bind",
+    takes_value: true,
+    summary: "公网监听地址，默认 0.0.0.0:80",
+};
+
+static CLOUD_SERVE: Command = Command {
+    name: "serve",
+    summary: "按记下的域名在公网提供工作区",
+    surface: Surface::Cli,
+    args: &[CLOUD_BIND],
+    children: &[],
+    run: Some(cloud_serve),
 };
 
 static KERNEL: Command = Command {
@@ -187,6 +202,7 @@ static IDENTITY: Command = Command {
         IDENTITY_ACTIVATE,
         IDENTITY_FINISH,
         IDENTITY_LOGIN,
+        IDENTITY_LOGOUT,
         IDENTITY_PASSWORD,
         IDENTITY_RESET,
     ],
@@ -227,6 +243,15 @@ static IDENTITY_LOGIN: Command = Command {
     args: &[PASSWORD],
     children: &[],
     run: Some(identity_login),
+};
+
+static IDENTITY_LOGOUT: Command = Command {
+    name: "logout",
+    summary: "离开这一次，并收回公网入口的登录",
+    surface: Surface::Both,
+    args: &[],
+    children: &[],
+    run: Some(identity_logout),
 };
 
 static IDENTITY_PASSWORD: Command = Command {
@@ -281,6 +306,7 @@ fn server(invocation: &Invocation) -> Result<Report, CommandError> {
     let site = Site {
         frontend: frontend_dir(invocation),
         gd5: gd5_dir(invocation),
+        domain: None,
     };
     serve(listener, site).map_err(|error| CommandError::Failed(error.to_string()))?;
     Ok(Report::ok(url))
@@ -295,8 +321,8 @@ fn kernel_services(_: &Invocation) -> Result<Report, CommandError> {
 }
 
 fn cloud_status(_: &Invocation) -> Result<Report, CommandError> {
-    match crate::desk::with_desk(crate::cloud::stored_domain) {
-        Ok(domain) => Ok(crate::cloud::status_report(&domain)),
+    match crate::desk::with_desk(crate::cloud::load) {
+        Ok(state) => Ok(crate::cloud::status_report(&state)),
         Err(report) => Ok(report),
     }
 }
@@ -305,15 +331,44 @@ fn cloud_domain(invocation: &Invocation) -> Result<Report, CommandError> {
     let name = invocation.value("name").unwrap_or("");
     let saved = crate::desk::with_desk(|| {
         if name.is_empty() {
-            crate::cloud::stored_domain()
+            crate::cloud::load()
         } else {
             crate::cloud::set_domain(name)
         }
     });
     match saved {
-        Ok(domain) => Ok(crate::cloud::status_report(&domain)),
+        Ok(state) => Ok(crate::cloud::status_report(&state)),
         Err(report) => Ok(report),
     }
+}
+
+fn cloud_serve(invocation: &Invocation) -> Result<Report, CommandError> {
+    let state = match crate::desk::with_desk(crate::cloud::load) {
+        Ok(state) => state,
+        Err(report) => return Ok(report),
+    };
+    if state.domain.is_empty() {
+        return Ok(Report::fail("先记下域名。"));
+    }
+    let bind = invocation.value("bind").unwrap_or("0.0.0.0:80").to_string();
+    let listener = TcpListener::bind(&bind)
+        .map_err(|error| CommandError::Failed(format!("无法监听 {bind}: {error}")))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| CommandError::Failed(format!("无法读取监听地址: {error}")))?;
+    if let Err(report) = crate::desk::with_desk(|| crate::cloud::set_publish(&address.to_string()))
+    {
+        return Ok(report);
+    }
+    let url = crate::cloud::public_url(&state.domain, address.port());
+    println!("{url}");
+    let site = crate::http::Site {
+        frontend: frontend_dir(invocation),
+        gd5: gd5_dir(invocation),
+        domain: Some(state.domain),
+    };
+    crate::http::serve(listener, site).map_err(|error| CommandError::Failed(error.to_string()))?;
+    Ok(Report::ok(url))
 }
 
 fn kernel_start(_: &Invocation) -> Result<Report, CommandError> {
@@ -339,6 +394,10 @@ fn identity_activate(invocation: &Invocation) -> Result<Report, CommandError> {
 
 fn identity_finish(_: &Invocation) -> Result<Report, CommandError> {
     Ok(crate::desk::with_desk(crate::desk::finish_report))
+}
+
+fn identity_logout(_: &Invocation) -> Result<Report, CommandError> {
+    Ok(crate::desk::with_desk(crate::desk::logout_report))
 }
 
 fn identity_login(invocation: &Invocation) -> Result<Report, CommandError> {

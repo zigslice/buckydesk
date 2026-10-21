@@ -14,6 +14,7 @@ const MAX_REQUEST: usize = 3 * 1024 * 1024;
 pub struct Site {
     pub frontend: PathBuf,
     pub gd5: PathBuf,
+    pub domain: Option<String>,
 }
 
 pub fn open_browser(url: &str) -> io::Result<()> {
@@ -74,6 +75,8 @@ fn handle_client(mut stream: TcpStream, site: &Site) -> io::Result<()> {
 struct Incoming {
     method: String,
     path: String,
+    host: String,
+    authorization: String,
     body: Vec<u8>,
 }
 
@@ -135,8 +138,22 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Option<Incoming>> {
     Ok(Some(Incoming {
         method: method.to_string(),
         path: path.to_string(),
+        host: header_value(&head, "host"),
+        authorization: header_value(&head, "authorization"),
         body,
     }))
+}
+
+fn header_value(head: &str, wanted: &str) -> String {
+    for line in head.split("\r\n").skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case(wanted) {
+            return value.trim().to_string();
+        }
+    }
+    String::new()
 }
 
 fn content_length(head: &str) -> Option<usize> {
@@ -164,15 +181,35 @@ fn respond(request: &Incoming, site: &Site) -> (u16, &'static str, &'static str,
     let Some(path) = percent_decode(path) else {
         return plain(400, "Bad Request", "路径编码无效。");
     };
+    if let Some(domain) = &site.domain {
+        if !host_allowed(&request.host, domain) {
+            return plain(421, "Misdirected Request", "这个地址不是这台电脑的域名。");
+        }
+    }
     match (request.method.as_str(), path.as_str()) {
         ("GET", "/api/commands") => json_response(200, "OK", describe(crate::command::root())),
-        ("POST", "/api/exec") => exec(&request.body),
+        ("POST", "/api/exec") => exec(&request.body, site.domain.is_some(), &request.authorization),
         ("GET", _) => static_file(&path, site),
         _ => plain(405, "Method Not Allowed", "方法不允许。"),
     }
 }
 
-fn exec(body: &[u8]) -> (u16, &'static str, &'static str, Vec<u8>) {
+pub fn host_allowed(host: &str, domain: &str) -> bool {
+    let host = host
+        .split(':')
+        .next()
+        .unwrap_or(host)
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    host == domain || host == format!("ood1.{domain}") || host == "localhost" || host == "127.0.0.1"
+}
+
+fn exec(
+    body: &[u8],
+    require_session: bool,
+    authorization: &str,
+) -> (u16, &'static str, &'static str, Vec<u8>) {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(value) => value,
         Err(_) => {
@@ -199,6 +236,9 @@ fn exec(body: &[u8]) -> (u16, &'static str, &'static str, Vec<u8>) {
             }
         }
     }
+    if require_session && !guest_command(&argv) && !crate::desk::session_allows(authorization) {
+        return json_response(401, "Unauthorized", error_body("请重新进入。", "failed"));
+    }
     match dispatch(&argv, Surface::Http) {
         Ok(report) => json_response(200, "OK", report_value(&report)),
         Err(CommandError::Usage(text)) => {
@@ -208,6 +248,14 @@ fn exec(body: &[u8]) -> (u16, &'static str, &'static str, Vec<u8>) {
             json_response(403, "Forbidden", error_body(&text, "failed"))
         }
     }
+}
+
+fn guest_command(argv: &[String]) -> bool {
+    let names: Vec<&str> = argv.iter().map(String::as_str).collect();
+    matches!(
+        names.as_slice(),
+        ["desk", "identity", "status"] | ["desk", "identity", "login", ..]
+    )
 }
 
 fn report_value(report: &Report) -> Value {
@@ -356,6 +404,7 @@ mod tests {
         Site {
             gd5: frontend.join("vendor/gd5"),
             frontend,
+            domain: None,
         }
     }
 
@@ -451,5 +500,58 @@ mod tests {
             "GET /gd5/%2e%2e/%2e%2e/backend/Cargo.toml HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
         );
         assert!(escaped.starts_with("HTTP/1.1 404"));
+    }
+
+    fn start_named(domain: &str) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut hosted = site();
+        hosted.domain = Some(domain.to_string());
+        thread::spawn(move || serve(listener, hosted));
+        addr
+    }
+
+    #[test]
+    fn public_listener_checks_the_host_and_the_session() {
+        let addr = start_named("example.invalid");
+        let page = exchange(
+            addr,
+            "GET / HTTP/1.1\r\nHost: example.invalid\r\nConnection: close\r\n\r\n",
+        );
+        assert!(page.starts_with("HTTP/1.1 200"));
+        let device = exchange(
+            addr,
+            "GET / HTTP/1.1\r\nHost: ood1.example.invalid\r\nConnection: close\r\n\r\n",
+        );
+        assert!(device.starts_with("HTTP/1.1 200"));
+        let wrong = exchange(
+            addr,
+            "GET / HTTP/1.1\r\nHost: other.example\r\nConnection: close\r\n\r\n",
+        );
+        assert!(wrong.starts_with("HTTP/1.1 421"));
+        assert!(body_of(&wrong).contains("这个地址不是这台电脑的域名。"));
+
+        let payload = br#"{"argv":["desk","kernel","status"]}"#;
+        let denied = exchange(
+            addr,
+            &format!(
+                "POST /api/exec HTTP/1.1\r\nHost: example.invalid\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                payload.len(),
+                std::str::from_utf8(payload).unwrap()
+            ),
+        );
+        assert!(denied.starts_with("HTTP/1.1 401"));
+        assert!(body_of(&denied).contains("请重新进入。"));
+
+        let login = br#"{"argv":["desk","identity","login","--password","nope-nope"]}"#;
+        let guest = exchange(
+            addr,
+            &format!(
+                "POST /api/exec HTTP/1.1\r\nHost: example.invalid\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                login.len(),
+                std::str::from_utf8(login).unwrap()
+            ),
+        );
+        assert!(guest.starts_with("HTTP/1.1 200"));
     }
 }

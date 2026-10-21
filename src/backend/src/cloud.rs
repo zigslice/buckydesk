@@ -5,11 +5,12 @@ use serde_json::{Map, Value};
 use std::fs;
 use std::io;
 use std::net::{IpAddr, TcpListener, ToSocketAddrs};
-use std::thread;
 
-#[derive(Serialize, Deserialize)]
-struct CloudFile {
-    domain: String,
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CloudState {
+    pub domain: String,
+    #[serde(default)]
+    pub publish: String,
 }
 
 fn cloud_path() -> std::path::PathBuf {
@@ -24,63 +25,110 @@ pub fn wipe() -> Result<(), ()> {
     }
 }
 
-pub fn stored_domain() -> Result<String, Report> {
+pub fn load() -> Result<CloudState, Report> {
     let path = cloud_path();
     if !path.exists() {
-        return Ok(String::new());
+        return Ok(CloudState {
+            domain: String::new(),
+            publish: String::new(),
+        });
     }
     let text = fs::read_to_string(path).map_err(|_| Report::fail("工作区暂时打不开。"))?;
-    let file: CloudFile =
-        serde_json::from_str(&text).map_err(|_| Report::fail("工作区暂时打不开。"))?;
-    Ok(file.domain)
+    serde_json::from_str(&text).map_err(|_| Report::fail("工作区暂时打不开。"))
 }
 
-pub fn set_domain(raw: &str) -> Result<String, Report> {
+pub fn set_domain(raw: &str) -> Result<CloudState, Report> {
     let domain = normalize_domain(raw).map_err(Report::fail)?;
+    let mut state = load()?;
+    state.domain = domain;
+    store(&state)?;
+    Ok(state)
+}
+
+pub fn set_publish(address: &str) -> Result<(), Report> {
+    let mut state = load()?;
+    state.publish = address.to_string();
+    store(&state)
+}
+
+fn store(state: &CloudState) -> Result<(), Report> {
     let dir = state_dir();
     fs::create_dir_all(&dir).map_err(|_| Report::fail("域名写不进去。"))?;
     let temporary = dir.join(".cloud.json.tmp");
-    let text = serde_json::to_string_pretty(&CloudFile {
-        domain: domain.clone(),
-    })
-    .map_err(|_| Report::fail("域名写不进去。"))?;
+    let text = serde_json::to_string_pretty(state).map_err(|_| Report::fail("域名写不进去。"))?;
     fs::write(&temporary, text).map_err(|_| Report::fail("域名写不进去。"))?;
     restrict_to_owner(&temporary).map_err(|_| Report::fail("域名写不进去。"))?;
     fs::rename(&temporary, cloud_path()).map_err(|_| Report::fail("域名写不进去。"))?;
-    Ok(domain)
+    Ok(())
 }
 
-pub fn status_report(domain: &str) -> Report {
+pub fn status_report(state: &CloudState) -> Report {
+    let domain = state.domain.as_str();
     if domain.is_empty() {
         return Report::ok("还没有域名。记下域名之后，才能从网上打开。").with_data(status_data(
-            domain,
+            state,
             Vec::new(),
             false,
             false,
+            80,
             false,
         ));
     }
     let addresses = lookup(domain);
     let points_here = addresses.iter().any(|ip| address_is_local(*ip));
-    let (http, https) = probe_gateway();
-    let reachable = points_here && http && https;
-    let summary = if reachable {
-        format!("可以从网上打开 {domain}。")
+    let (listening, port) = probe_publish(&state.publish);
+    let secure = probe_addr("127.0.0.1:443");
+    let summary = summary_for(domain, port, points_here, listening, secure);
+    Report::ok(summary).with_data(status_data(
+        state,
+        addresses,
+        points_here,
+        listening,
+        port,
+        secure,
+    ))
+}
+
+fn summary_for(
+    domain: &str,
+    port: u16,
+    points_here: bool,
+    listening: bool,
+    secure: bool,
+) -> String {
+    if !listening {
+        return format!("已记下域名 {domain}。别人还不能从网上打开。");
+    }
+    if !points_here {
+        return "本机已经在听。域名还没有指向这台机器。".to_string();
+    }
+    if secure && port == 80 {
+        return format!("可以从网上打开 {domain}。");
+    }
+    let url = public_url(domain, port);
+    format!("可以用 {url} 打开。还没有证书。")
+}
+
+pub fn public_url(domain: &str, port: u16) -> String {
+    if port == 80 {
+        format!("http://{domain}/")
     } else {
-        format!("已记下域名 {domain}。别人还不能从网上打开。")
-    };
-    Report::ok(summary).with_data(status_data(domain, addresses, points_here, http, https))
+        format!("http://{domain}:{port}/")
+    }
 }
 
 fn status_data(
-    domain: &str,
+    state: &CloudState,
     addresses: Vec<IpAddr>,
     points_here: bool,
-    http: bool,
-    https: bool,
+    listening: bool,
+    port: u16,
+    secure: bool,
 ) -> Map<String, Value> {
+    let domain = state.domain.as_str();
     let mut data = Map::new();
     data.insert("domain".into(), Value::String(domain.to_string()));
+    data.insert("publish".into(), Value::String(state.publish.clone()));
     data.insert(
         "zoneDid".into(),
         Value::String(if domain.is_empty() {
@@ -107,15 +155,38 @@ fn status_data(
         ),
     );
     data.insert("dnsPointsHere".into(), Value::Bool(points_here));
+    data.insert("listening".into(), Value::Bool(listening));
+    data.insert("secure".into(), Value::Bool(secure));
     data.insert(
         "ports".into(),
-        Value::Array(vec![port_value(80, http), port_value(443, https)]),
+        Value::Array(vec![port_value(port, listening), port_value(443, secure)]),
     );
+    if listening && !domain.is_empty() {
+        data.insert("url".into(), Value::String(public_url(domain, port)));
+    }
     data.insert(
         "reachable".into(),
-        Value::Bool(points_here && http && https),
+        Value::Bool(points_here && listening && secure && port == 80),
     );
     data
+}
+
+fn probe_publish(publish: &str) -> (bool, u16) {
+    if publish.is_empty() {
+        return (probe_addr("127.0.0.1:80"), 80);
+    }
+    let Some(port) = publish
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse().ok())
+    else {
+        return (false, 80);
+    };
+    let endpoint = if publish.starts_with("0.0.0.0:") || publish.starts_with("[::]:") {
+        format!("127.0.0.1:{port}")
+    } else {
+        publish.to_string()
+    };
+    (probe_addr(&endpoint), port)
 }
 
 fn port_value(port: u16, listening: bool) -> Value {
@@ -157,12 +228,4 @@ fn lookup(domain: &str) -> Vec<IpAddr> {
 
 fn address_is_local(ip: IpAddr) -> bool {
     TcpListener::bind((ip, 0)).is_ok()
-}
-
-fn probe_gateway() -> (bool, bool) {
-    thread::scope(|scope| {
-        let http = scope.spawn(|| probe_addr("127.0.0.1:80"));
-        let https = scope.spawn(|| probe_addr("127.0.0.1:443"));
-        (http.join().unwrap_or(false), https.join().unwrap_or(false))
-    })
 }
