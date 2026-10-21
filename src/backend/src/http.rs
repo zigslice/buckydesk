@@ -49,14 +49,54 @@ pub fn serve(listener: TcpListener, site: Site) -> io::Result<()> {
     Ok(())
 }
 
+pub fn serve_tls(
+    listener: TcpListener,
+    site: Site,
+    config: Arc<rustls::ServerConfig>,
+) -> io::Result<()> {
+    let site = Arc::new(site);
+    for connection in listener.incoming() {
+        match connection {
+            Ok(stream) => {
+                let site = Arc::clone(&site);
+                let config = Arc::clone(&config);
+                thread::spawn(move || {
+                    if let Err(error) = handle_tls(stream, &site, config) {
+                        eprintln!("连接处理失败: {error}");
+                    }
+                });
+            }
+            Err(error) => eprintln!("接受连接失败: {error}"),
+        }
+    }
+    Ok(())
+}
+
 fn handle_client(mut stream: TcpStream, site: &Site) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-    let request = match read_request(&mut stream) {
+    handle_io(&mut stream, site)
+}
+
+fn handle_tls(
+    mut stream: TcpStream,
+    site: &Site,
+    config: Arc<rustls::ServerConfig>,
+) -> io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    let mut connection = rustls::ServerConnection::new(config)
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
+    let mut tls = rustls::Stream::new(&mut connection, &mut stream);
+    handle_io(&mut tls, site)
+}
+
+fn handle_io(stream: &mut (impl Read + Write), site: &Site) -> io::Result<()> {
+    let request = match read_request(stream) {
         Ok(request) => request,
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
             return write_bytes(
-                &mut stream,
+                stream,
                 413,
                 "Payload Too Large",
                 "text/plain; charset=utf-8",
@@ -69,7 +109,7 @@ fn handle_client(mut stream: TcpStream, site: &Site) -> io::Result<()> {
         return Ok(());
     };
     let (status, reason, content_type, body) = respond(&request, site);
-    write_bytes(&mut stream, status, reason, content_type, &body)
+    write_bytes(stream, status, reason, content_type, &body)
 }
 
 struct Incoming {
@@ -80,7 +120,7 @@ struct Incoming {
     body: Vec<u8>,
 }
 
-fn read_request(stream: &mut TcpStream) -> io::Result<Option<Incoming>> {
+fn read_request(stream: &mut impl Read) -> io::Result<Option<Incoming>> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 2048];
     let header_end = loop {
@@ -379,7 +419,7 @@ fn plain(
 }
 
 fn write_bytes(
-    stream: &mut TcpStream,
+    stream: &mut impl Write,
     status: u16,
     reason: &str,
     content_type: &str,
@@ -553,5 +593,107 @@ mod tests {
             ),
         );
         assert!(guest.starts_with("HTTP/1.1 200"));
+    }
+
+    #[test]
+    fn self_signed_certificate_serves_the_same_page() {
+        let dir = std::env::temp_dir().join(format!("buckydesk-tls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let addr = crate::desk::isolate(&dir, "127.0.0.1:1", || {
+            let identity = crate::cloud::issue_certificate("example.invalid").unwrap();
+            assert!(identity.cert_pem.starts_with("-----BEGIN CERTIFICATE-----"));
+            assert_eq!(identity.kind, "self");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(dir.join("key.pem"))
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o777, 0o600);
+            }
+            let config = crate::cloud::tls_server_config(&identity).unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let mut hosted = site();
+            hosted.domain = Some("example.invalid".into());
+            thread::spawn(move || serve_tls(listener, hosted, config));
+            addr
+        });
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAny))
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("example.invalid").unwrap();
+        let mut connection = rustls::ClientConnection::new(Arc::new(config), name).unwrap();
+        let mut tcp = TcpStream::connect(addr).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut tls = rustls::Stream::new(&mut connection, &mut tcp);
+        tls.write_all(b"GET / HTTP/1.1\r\nHost: example.invalid\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut bytes = Vec::new();
+        match tls.read_to_end(&mut bytes) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof && !bytes.is_empty() => {}
+            Err(error) => panic!("{error}"),
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("HTTP/1.1 200"), "{text}");
+        assert!(text.contains("BuckyDesk"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[derive(Debug)]
+    struct AcceptAny;
+
+    impl rustls::client::danger::ServerCertVerifier for AcceptAny {
+        fn verify_server_cert(
+            &self,
+            _: &rustls::pki_types::CertificateDer<'_>,
+            _: &[rustls::pki_types::CertificateDer<'_>],
+            _: &rustls::pki_types::ServerName<'_>,
+            _: &[u8],
+            _: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &rustls::pki_types::CertificateDer<'_>,
+            dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls12_signature(
+                message,
+                cert,
+                dss,
+                &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+            )
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &rustls::pki_types::CertificateDer<'_>,
+            dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls13_signature(
+                message,
+                cert,
+                dss,
+                &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+            )
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
     }
 }

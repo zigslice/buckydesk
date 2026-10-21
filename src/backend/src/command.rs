@@ -473,10 +473,14 @@ mod tests {
             assert_eq!(saved.data["zoneDid"], "did:web:example.invalid");
             assert_eq!(saved.data["deviceDid"], "did:web:ood1.example.invalid");
             assert_eq!(saved.data["reachable"], false);
-            assert_eq!(
-                saved.summary,
-                "已记下域名 example.invalid。别人还不能从网上打开。"
-            );
+            assert!(saved
+                .summary
+                .starts_with("已记下域名 example.invalid。别人还不能从网上打开。"));
+            let point_to = saved.data["pointTo"].as_str().unwrap_or("");
+            if !point_to.is_empty() {
+                assert!(saved.summary.contains(point_to));
+                assert!(saved.data["records"].as_array().unwrap().len() >= 2);
+            }
             let bad = dispatch(
                 &argv("cloud domain --name=http://example.invalid"),
                 Surface::Http,
