@@ -1,7 +1,7 @@
 use crate::command::{Arg, Command, CommandError, Invocation, Report, Surface};
 use crate::http::{open_browser, serve, Site};
 use serde_json::{Map, Value};
-use std::net::TcpListener;
+use std::net::{IpAddr, TcpListener};
 use std::path::PathBuf;
 
 const BIND: Arg = Arg {
@@ -138,11 +138,29 @@ const CLOUD_BIND: Arg = Arg {
     summary: "公网监听地址，默认 0.0.0.0:80",
 };
 
+const CLOUD_TLS_BIND: Arg = Arg {
+    name: "tls-bind",
+    takes_value: true,
+    summary: "HTTPS 监听地址。入口是 80 时，默认同一地址的 443",
+};
+
+const CLOUD_CERT: Arg = Arg {
+    name: "cert",
+    takes_value: true,
+    summary: "证书 PEM。不带时由这台机器签发",
+};
+
+const CLOUD_KEY: Arg = Arg {
+    name: "key",
+    takes_value: true,
+    summary: "证书私钥 PEM，和 --cert 一起给出",
+};
+
 static CLOUD_SERVE: Command = Command {
     name: "serve",
     summary: "按记下的域名在公网提供工作区",
     surface: Surface::Cli,
-    args: &[CLOUD_BIND],
+    args: &[CLOUD_BIND, CLOUD_TLS_BIND, CLOUD_CERT, CLOUD_KEY],
     children: &[],
     run: Some(cloud_serve),
 };
@@ -350,18 +368,57 @@ fn cloud_serve(invocation: &Invocation) -> Result<Report, CommandError> {
     if state.domain.is_empty() {
         return Ok(Report::fail("先记下域名。"));
     }
+    let cert = invocation.value("cert");
+    let key = invocation.value("key");
+    if cert.is_some() != key.is_some() {
+        return Ok(Report::fail("证书和私钥要一起给出。"));
+    }
     let bind = invocation.value("bind").unwrap_or("0.0.0.0:80").to_string();
     let listener = TcpListener::bind(&bind)
         .map_err(|error| CommandError::Failed(format!("无法监听 {bind}: {error}")))?;
     let address = listener
         .local_addr()
         .map_err(|error| CommandError::Failed(format!("无法读取监听地址: {error}")))?;
-    if let Err(report) = crate::desk::with_desk(|| crate::cloud::set_publish(&address.to_string()))
-    {
+    let tls_bind = invocation
+        .value("tls-bind")
+        .map(str::to_string)
+        .or_else(|| default_tls_bind(&address));
+    let tls = match tls_bind {
+        Some(tls_bind) => match prepare_tls(invocation, &state.domain, cert, key, &tls_bind) {
+            Ok(opened) => Some(opened),
+            Err(message) => {
+                eprintln!("{message}");
+                None
+            }
+        },
+        None => None,
+    };
+    let (tls_address, certificate) = match &tls {
+        Some(opened) => (opened.address.clone(), opened.kind.to_string()),
+        None => (String::new(), String::new()),
+    };
+    if let Err(report) = crate::desk::with_desk(|| {
+        crate::cloud::set_entrance(&address.to_string(), &tls_address, &certificate)
+    }) {
         return Ok(report);
     }
     let url = crate::cloud::public_url(&state.domain, address.port());
     println!("{url}");
+    if let Some(opened) = tls {
+        if let Some(port) = opened
+            .address
+            .rsplit_once(':')
+            .and_then(|(_, port)| port.parse().ok())
+        {
+            println!("{}", crate::cloud::https_url(&state.domain, port));
+        }
+        std::thread::spawn(move || {
+            if let Err(error) = crate::http::serve_tls(opened.listener, opened.site, opened.config)
+            {
+                eprintln!("HTTPS 停了: {error}");
+            }
+        });
+    }
     let site = crate::http::Site {
         frontend: frontend_dir(invocation),
         gd5: gd5_dir(invocation),
@@ -369,6 +426,54 @@ fn cloud_serve(invocation: &Invocation) -> Result<Report, CommandError> {
     };
     crate::http::serve(listener, site).map_err(|error| CommandError::Failed(error.to_string()))?;
     Ok(Report::ok(url))
+}
+
+struct TlsDoor {
+    listener: TcpListener,
+    site: crate::http::Site,
+    config: std::sync::Arc<rustls::ServerConfig>,
+    address: String,
+    kind: &'static str,
+}
+
+fn default_tls_bind(address: &std::net::SocketAddr) -> Option<String> {
+    if address.port() != 80 {
+        return None;
+    }
+    Some(match address.ip() {
+        IpAddr::V4(ip) => format!("{ip}:443"),
+        IpAddr::V6(ip) => format!("[{ip}]:443"),
+    })
+}
+
+fn prepare_tls(
+    invocation: &Invocation,
+    domain: &str,
+    cert: Option<&str>,
+    key: Option<&str>,
+    tls_bind: &str,
+) -> Result<TlsDoor, String> {
+    let identity = crate::desk::with_desk(|| crate::cloud::identity_for(domain, cert, key))
+        .map_err(|report| report.summary)?;
+    let config = crate::cloud::tls_server_config(&identity).map_err(|report| report.summary)?;
+    let listener = TcpListener::bind(tls_bind)
+        .map_err(|error| format!("HTTPS 暂时听不了 {tls_bind}：{error}"))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| format!("无法读取 HTTPS 地址: {error}"))?
+        .to_string();
+    let site = crate::http::Site {
+        frontend: frontend_dir(invocation),
+        gd5: gd5_dir(invocation),
+        domain: Some(domain.to_string()),
+    };
+    Ok(TlsDoor {
+        listener,
+        site,
+        config,
+        address,
+        kind: identity.kind,
+    })
 }
 
 fn kernel_start(_: &Invocation) -> Result<Report, CommandError> {

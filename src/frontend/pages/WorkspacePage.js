@@ -1069,6 +1069,31 @@ function computer(page, state) {
     state.notice ? Text({ text: state.notice }) : null,
     Text({ text: `名字：${state.account.name}` }),
     Text({ text: `钥匙的位置：${state.account.keyFolder}` }),
+    Text({ type: 'secondary', text: '在别处打开' }),
+    Text({
+      type: 'muted',
+      text: state.cloudSummary || '还只有这台电脑的浏览器能打开。',
+    }),
+    state.cloud?.url ? Text({ type: 'muted', text: state.cloud.url }) : null,
+    ...(Array.isArray(state.cloud?.records)
+      ? state.cloud.records.map((record) =>
+          Text({ type: 'muted', text: `${record.name}  ${record.type}  ${record.value}` })
+        )
+      : []),
+    state.reach?.kind === 'local'
+      ? Text({ type: 'muted', text: `已记下名字 ${state.reach.value}。` })
+      : null,
+    elRow([
+      Button({
+        text: '用我的名字',
+        onClick: () => page.act(['workspace', 'reach', '--kind', 'local']),
+      }),
+      Input({ id: 'domain', placeholder: '自己的域名' }),
+      Button({
+        text: '用这个域名',
+        onClick: () => page.setDomain(),
+      }),
+    ]),
     Text({ type: 'secondary', text: '这台电脑上的人' }),
     state.members.map((member) => entry(member.name, member.id === 'owner' ? '管理员' : '能进入', null)),
     state.creating === 'member'
@@ -1103,26 +1128,6 @@ function computer(page, state) {
         type: state.language === 'English' ? 'primary' : 'default',
         text: 'English',
         onClick: () => page.act(['workspace', 'language', '--name', 'English']),
-      }),
-    ]),
-    Text({ type: 'secondary', text: '在别处打开' }),
-    Text({
-      type: 'muted',
-      text: state.cloudSummary || '还只有这台电脑的浏览器能打开。',
-    }),
-    state.cloud?.url ? Text({ type: 'muted', text: state.cloud.url }) : null,
-    state.reach?.kind === 'local'
-      ? Text({ type: 'muted', text: `已记下名字 ${state.reach.value}。` })
-      : null,
-    elRow([
-      Button({
-        text: '用我的名字',
-        onClick: () => page.act(['workspace', 'reach', '--kind', 'local']),
-      }),
-      Input({ id: 'domain', placeholder: '自己的域名' }),
-      Button({
-        text: '用这个域名',
-        onClick: () => page.setDomain(),
       }),
     ]),
     Text({ type: 'secondary', text: '我去设置另一台电脑' }),
