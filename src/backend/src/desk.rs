@@ -340,7 +340,16 @@ pub fn login_report(password: &str) -> Report {
             if hash_password(&desk.name, password) != desk.password_hash {
                 return Report::fail("密码不正确。");
             }
-            Report::ok("已进入工作区。").with_data(public_data(&desk))
+            let mut report = Report::ok("已进入工作区。").with_data(public_data(&desk));
+            match issue_session() {
+                Ok(token) => {
+                    report
+                        .data
+                        .insert("token".to_string(), Value::String(token));
+                    report
+                }
+                Err(()) => Report::fail("工作区暂时打不开。"),
+            }
         }
         Ok(None) => Report::fail("尚未写入本机身份。"),
         Err(()) => Report::fail("工作区暂时打不开。"),
@@ -359,7 +368,10 @@ pub fn password_report(current: &str, next: &str) -> Report {
             }
             desk.password_hash = hash_password(&desk.name, next);
             match store_file(&desk) {
-                Ok(()) => Report::ok("密码已更新。").with_data(public_data(&desk)),
+                Ok(()) => match clear_session() {
+                    Ok(()) => Report::ok("密码已更新。").with_data(public_data(&desk)),
+                    Err(()) => Report::fail("工作区暂时打不开。"),
+                },
                 Err(()) => Report::fail("身份写不进去。"),
             }
         }
@@ -377,12 +389,102 @@ pub fn require_ready() -> Result<String, Report> {
     }
 }
 
+pub fn logout_report() -> Report {
+    match clear_session() {
+        Ok(()) => Report::ok("已离开。"),
+        Err(()) => Report::fail("工作区暂时打不开。"),
+    }
+}
+
 pub fn reset_report() -> Report {
-    if remove_file().is_err() || crate::workspace::wipe().is_err() || crate::cloud::wipe().is_err()
+    if remove_file().is_err()
+        || crate::workspace::wipe().is_err()
+        || crate::cloud::wipe().is_err()
+        || clear_session().is_err()
     {
         return Report::fail("身份写不进去。");
     }
     Report::ok("工作区已重置。").with_data(empty_data())
+}
+
+fn session_path() -> PathBuf {
+    state_dir().join("session.json")
+}
+
+pub fn issue_session() -> Result<String, ()> {
+    let token = random_token()?;
+    let digest = Sha256::digest(token.as_bytes());
+    let hash = base64::engine::general_purpose::STANDARD.encode(digest);
+    let dir = state_dir();
+    fs::create_dir_all(&dir).map_err(|_| ())?;
+    let temporary = dir.join(".session.json.tmp");
+    let text = format!("{{\"hash\":\"{hash}\"}}\n");
+    fs::write(&temporary, text).map_err(|_| ())?;
+    restrict_to_owner(&temporary)?;
+    fs::rename(&temporary, session_path()).map_err(|_| ())?;
+    Ok(token)
+}
+
+pub fn clear_session() -> Result<(), ()> {
+    match fs::remove_file(session_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(()),
+    }
+}
+
+pub fn session_allows(header: &str) -> bool {
+    let Some(token) = header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "))
+    else {
+        return false;
+    };
+    let token = token.trim();
+    if token.is_empty() {
+        return false;
+    }
+    let Ok(text) = fs::read_to_string(session_path()) else {
+        return false;
+    };
+    let Ok(parsed) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    let Some(stored) = parsed.get("hash").and_then(Value::as_str) else {
+        return false;
+    };
+    let digest = Sha256::digest(token.as_bytes());
+    let hash = base64::engine::general_purpose::STANDARD.encode(digest);
+    hash_equal(stored, &hash)
+}
+
+fn hash_equal(left: &str, right: &str) -> bool {
+    left.len() == right.len()
+        && left
+            .bytes()
+            .zip(right.bytes())
+            .fold(0u8, |diff, (one, other)| diff | (one ^ other))
+            == 0
+}
+
+fn random_token() -> Result<String, ()> {
+    let mut bytes = [0u8; 32];
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        let mut file = fs::File::open("/dev/urandom").map_err(|_| ())?;
+        file.read_exact(&mut bytes).map_err(|_| ())?;
+    }
+    #[cfg(not(unix))]
+    {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| ())?
+            .as_nanos();
+        let mixed = Sha256::digest(format!("{nanos}-{}", std::process::id()).as_bytes());
+        bytes.copy_from_slice(&mixed);
+    }
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }
 
 pub fn kernel_status_report() -> Report {
@@ -491,15 +593,39 @@ mod tests {
                 right.data.get("name").and_then(Value::as_str),
                 Some("alice")
             );
+            let token = right
+                .data
+                .get("token")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string();
+            assert!(session_allows(&format!("Bearer {token}")));
+            assert!(!session_allows("Bearer wrong-token"));
+            let session = fs::read_to_string(dir.join("session.json")).unwrap();
+            assert!(!session.contains(&token));
+            let left = logout_report();
+            assert!(left.ok);
+            assert_eq!(left.summary, "已离开。");
+            assert!(!session_allows(&format!("Bearer {token}")));
 
             let changed = password_report("12345678", "87654321");
             assert!(changed.ok);
             assert!(!login_report("12345678").ok);
-            assert!(login_report("87654321").ok);
+            let again = login_report("87654321");
+            assert!(again.ok);
+            let next = again
+                .data
+                .get("token")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string();
+            assert_ne!(next, token);
 
             let cleared = reset_report();
             assert!(cleared.ok);
             assert!(!dir.join("desk.json").exists());
+            assert!(!dir.join("session.json").exists());
+            assert!(!session_allows(&format!("Bearer {next}")));
             let status = identity_status_report();
             assert_eq!(
                 status.data.get("configured").and_then(Value::as_bool),

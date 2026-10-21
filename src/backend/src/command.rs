@@ -393,6 +393,12 @@ mod tests {
     }
 
     #[test]
+    fn cloud_serve_is_cli_only() {
+        let error = dispatch(&argv("cloud serve"), Surface::Http).unwrap_err();
+        assert!(matches!(error, CommandError::Failed(_)));
+    }
+
+    #[test]
     fn unknown_command_is_usage() {
         let error = dispatch(&argv("desk kernel reboot"), Surface::Cli).unwrap_err();
         assert!(matches!(error, CommandError::Usage(_)));
@@ -438,7 +444,7 @@ mod tests {
             .collect();
         assert_eq!(
             identity,
-            vec!["status", "activate", "finish", "login", "password", "reset"]
+            vec!["status", "activate", "finish", "login", "logout", "password", "reset"]
         );
         let cloud: Vec<&str> = tree["commands"][3]["commands"]
             .as_array()
@@ -446,7 +452,7 @@ mod tests {
             .iter()
             .map(|node| node["name"].as_str().unwrap())
             .collect();
-        assert_eq!(cloud, vec!["status", "domain"]);
+        assert_eq!(cloud, vec!["status", "domain", "serve"]);
     }
 
     #[test]
@@ -478,6 +484,15 @@ mod tests {
             .unwrap();
             assert!(!bad.ok);
             assert_eq!(bad.summary, "域名格式不正确");
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            crate::cloud::set_publish(&address.to_string()).unwrap();
+            let listening = dispatch(&argv("cloud status"), Surface::Http).unwrap();
+            assert_eq!(listening.data["listening"], true);
+            assert!(listening.summary.contains("域名还没有指向这台机器"));
+            assert_eq!(listening.data["reachable"], false);
+            drop(listener);
+
             let reset = dispatch(&argv("desk identity reset"), Surface::Http).unwrap();
             assert!(reset.ok);
             let cleared = dispatch(&argv("cloud status"), Surface::Http).unwrap();

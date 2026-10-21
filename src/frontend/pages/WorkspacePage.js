@@ -53,6 +53,20 @@ export class WorkspacePage extends Component {
       const identity = await exec(['desk', 'identity', 'status']);
       const kernel = await exec(['desk', 'kernel', 'status']);
       this.state.data = applyBoot(local, identity, kernel);
+      if (this.state.data.phase === 'login' && sessionStorage.getItem('bucky.token')) {
+        try {
+          const report = await exec(['desk', 'workspace', 'status']);
+          if (report.ok) {
+            this.state.data = applyWorkspace(enterDesk(this.state.data), report.data);
+            void this.loadServices();
+            void this.loadCloud();
+          } else {
+            sessionStorage.removeItem('bucky.token');
+          }
+        } catch {
+          sessionStorage.removeItem('bucky.token');
+        }
+      }
     } catch {
       this.state.data = { ...local, phase: 'unavailable', formError: '', notice: '' };
     }
@@ -77,6 +91,7 @@ export class WorkspacePage extends Component {
       return;
     }
     if (!report.ok) {
+      if (this.sessionEnded(report)) return;
       this.commit({ ...this.state.data, formError: report.summary || '工作区暂时打不开。' });
       return;
     }
@@ -157,6 +172,7 @@ export class WorkspacePage extends Component {
     try {
       const report = await exec(['desk', 'workspace', 'status']);
       if (!report.ok) {
+        if (this.sessionEnded(report)) return;
         this.commit({ ...base, formError: report.summary || '工作区暂时打不开。' });
         return;
       }
@@ -281,7 +297,25 @@ export class WorkspacePage extends Component {
       this.commit({ ...this.state.data, formError: report.summary || '密码不正确。' });
       return;
     }
+    if (report.data?.token) sessionStorage.setItem('bucky.token', report.data.token);
     await this.openWorkspace(enterDesk(this.state.data));
+  }
+
+  sessionEnded(report) {
+    if (report?.summary !== '请重新进入。') return false;
+    sessionStorage.removeItem('bucky.token');
+    this.commit(logout(this.state.data));
+    return true;
+  }
+
+  async leave() {
+    try {
+      await exec(['desk', 'identity', 'logout']);
+    } catch {
+      // 页面仍然离开。公网入口的登录在下次进入时重新签发。
+    }
+    sessionStorage.removeItem('bucky.token');
+    this.commit(logout(this.state.data));
   }
 
   async updatePassword() {
@@ -321,9 +355,11 @@ export class WorkspacePage extends Component {
     try {
       const report = await exec(['desk', 'identity', 'reset']);
       if (!report.ok) {
+        if (this.sessionEnded(report)) return;
         this.commit({ ...this.state.data, formError: report.summary });
         return;
       }
+      sessionStorage.removeItem('bucky.token');
       const kernel = await exec(['desk', 'kernel', 'status']);
       const next = resetAll();
       next.kernel = {
@@ -1074,6 +1110,7 @@ function computer(page, state) {
       type: 'muted',
       text: state.cloudSummary || '还只有这台电脑的浏览器能打开。',
     }),
+    state.cloud?.url ? Text({ type: 'muted', text: state.cloud.url }) : null,
     state.reach?.kind === 'local'
       ? Text({ type: 'muted', text: `已记下名字 ${state.reach.value}。` })
       : null,
@@ -1102,7 +1139,7 @@ function computer(page, state) {
     ]),
     Text({ type: 'muted', text: '还没有要添加的应用。' }),
     elRow([
-      Button({ text: '退出', onClick: () => page.commit(logout(page.state.data)) }),
+      Button({ text: '退出', onClick: () => page.leave() }),
       state.resetArmed
         ? Button({
             type: 'primary',

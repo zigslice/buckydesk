@@ -1,9 +1,12 @@
 export async function exec(argv) {
+  const headers = { 'content-type': 'application/json' };
+  const token = sessionStorage.getItem('bucky.token');
+  if (token) headers.authorization = `Bearer ${token}`;
   let response;
   try {
     response = await fetch('/api/exec', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       body: JSON.stringify({ argv }),
     });
   } catch {
