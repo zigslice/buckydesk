@@ -14,7 +14,7 @@ const MAX_REQUEST: usize = 3 * 1024 * 1024;
 pub struct Site {
     pub frontend: PathBuf,
     pub gd5: PathBuf,
-    pub domain: Option<String>,
+    pub entrance: Option<Arc<crate::cloud::Entrance>>,
 }
 
 pub fn open_browser(url: &str) -> io::Result<()> {
@@ -49,46 +49,10 @@ pub fn serve(listener: TcpListener, site: Site) -> io::Result<()> {
     Ok(())
 }
 
-pub fn serve_tls(
-    listener: TcpListener,
-    site: Site,
-    config: Arc<rustls::ServerConfig>,
-) -> io::Result<()> {
-    let site = Arc::new(site);
-    for connection in listener.incoming() {
-        match connection {
-            Ok(stream) => {
-                let site = Arc::clone(&site);
-                let config = Arc::clone(&config);
-                thread::spawn(move || {
-                    if let Err(error) = handle_tls(stream, &site, config) {
-                        eprintln!("连接处理失败: {error}");
-                    }
-                });
-            }
-            Err(error) => eprintln!("接受连接失败: {error}"),
-        }
-    }
-    Ok(())
-}
-
 fn handle_client(mut stream: TcpStream, site: &Site) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     handle_io(&mut stream, site)
-}
-
-fn handle_tls(
-    mut stream: TcpStream,
-    site: &Site,
-    config: Arc<rustls::ServerConfig>,
-) -> io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-    let mut connection = rustls::ServerConnection::new(config)
-        .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
-    let mut tls = rustls::Stream::new(&mut connection, &mut stream);
-    handle_io(&mut tls, site)
 }
 
 fn handle_io(stream: &mut (impl Read + Write), site: &Site) -> io::Result<()> {
@@ -108,8 +72,14 @@ fn handle_io(stream: &mut (impl Read + Write), site: &Site) -> io::Result<()> {
     let Some(request) = request else {
         return Ok(());
     };
-    let (status, reason, content_type, body) = respond(&request, site);
-    write_bytes(stream, status, reason, content_type, &body)
+    let answer = respond(&request, site);
+    write_bytes(
+        stream,
+        answer.status,
+        &answer.reason,
+        &answer.content_type,
+        &answer.body,
+    )
 }
 
 struct Incoming {
@@ -117,6 +87,14 @@ struct Incoming {
     path: String,
     host: String,
     authorization: String,
+    content_type: String,
+    body: Vec<u8>,
+}
+
+struct Answer {
+    status: u16,
+    reason: String,
+    content_type: String,
     body: Vec<u8>,
 }
 
@@ -180,6 +158,7 @@ fn read_request(stream: &mut impl Read) -> io::Result<Option<Incoming>> {
         path: path.to_string(),
         host: header_value(&head, "host"),
         authorization: header_value(&head, "authorization"),
+        content_type: header_value(&head, "content-type"),
         body,
     }))
 }
@@ -212,7 +191,24 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn respond(request: &Incoming, site: &Site) -> (u16, &'static str, &'static str, Vec<u8>) {
+fn respond(request: &Incoming, site: &Site) -> Answer {
+    if let Some(entrance) = &site.entrance {
+        let out = crate::cloud::entrance_request(
+            entrance,
+            &request.method,
+            &request.path,
+            &request.host,
+            &request.authorization,
+            &request.content_type,
+            &request.body,
+        );
+        return Answer {
+            status: out.status,
+            reason: out.reason,
+            content_type: out.content_type,
+            body: out.body,
+        };
+    }
     let path = request
         .path
         .split('?')
@@ -221,35 +217,15 @@ fn respond(request: &Incoming, site: &Site) -> (u16, &'static str, &'static str,
     let Some(path) = percent_decode(path) else {
         return plain(400, "Bad Request", "路径编码无效。");
     };
-    if let Some(domain) = &site.domain {
-        if !host_allowed(&request.host, domain) {
-            return plain(421, "Misdirected Request", "这个地址不是这台电脑的域名。");
-        }
-    }
     match (request.method.as_str(), path.as_str()) {
         ("GET", "/api/commands") => json_response(200, "OK", describe(crate::command::root())),
-        ("POST", "/api/exec") => exec(&request.body, site.domain.is_some(), &request.authorization),
+        ("POST", "/api/exec") => exec(&request.body),
         ("GET", _) => static_file(&path, site),
         _ => plain(405, "Method Not Allowed", "方法不允许。"),
     }
 }
 
-pub fn host_allowed(host: &str, domain: &str) -> bool {
-    let host = host
-        .split(':')
-        .next()
-        .unwrap_or(host)
-        .trim()
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    host == domain || host == format!("ood1.{domain}") || host == "localhost" || host == "127.0.0.1"
-}
-
-fn exec(
-    body: &[u8],
-    require_session: bool,
-    authorization: &str,
-) -> (u16, &'static str, &'static str, Vec<u8>) {
+fn exec(body: &[u8]) -> Answer {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(value) => value,
         Err(_) => {
@@ -276,9 +252,6 @@ fn exec(
             }
         }
     }
-    if require_session && !guest_command(&argv) && !crate::desk::session_allows(authorization) {
-        return json_response(401, "Unauthorized", error_body("请重新进入。", "failed"));
-    }
     match dispatch(&argv, Surface::Http) {
         Ok(report) => json_response(200, "OK", report_value(&report)),
         Err(CommandError::Usage(text)) => {
@@ -288,14 +261,6 @@ fn exec(
             json_response(403, "Forbidden", error_body(&text, "failed"))
         }
     }
-}
-
-fn guest_command(argv: &[String]) -> bool {
-    let names: Vec<&str> = argv.iter().map(String::as_str).collect();
-    matches!(
-        names.as_slice(),
-        ["desk", "identity", "status"] | ["desk", "identity", "login", ..]
-    )
 }
 
 fn report_value(report: &Report) -> Value {
@@ -315,7 +280,7 @@ fn error_body(summary: &str, error: &str) -> Value {
     })
 }
 
-fn static_file(path: &str, site: &Site) -> (u16, &'static str, &'static str, Vec<u8>) {
+fn static_file(path: &str, site: &Site) -> Answer {
     let (root, rel) = if path == "/" || path == "/index.html" {
         (&site.frontend, "index.html")
     } else if let Some(rest) = path.strip_prefix("/app/") {
@@ -332,7 +297,12 @@ fn static_file(path: &str, site: &Site) -> (u16, &'static str, &'static str, Vec
         return plain(404, "Not Found", "没有这个路径。");
     };
     match fs::read(&file) {
-        Ok(bytes) => (200, "OK", mime(&file), bytes),
+        Ok(bytes) => Answer {
+            status: 200,
+            reason: "OK".to_string(),
+            content_type: mime(&file).to_string(),
+            body: bytes,
+        },
         Err(_) => plain(404, "Not Found", "没有这个路径。"),
     }
 }
@@ -396,26 +366,22 @@ fn mime(path: &Path) -> &'static str {
     }
 }
 
-fn json_response(
-    status: u16,
-    reason: &'static str,
-    value: Value,
-) -> (u16, &'static str, &'static str, Vec<u8>) {
-    let body = serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec());
-    (status, reason, "application/json; charset=utf-8", body)
+fn json_response(status: u16, reason: &str, value: Value) -> Answer {
+    Answer {
+        status,
+        reason: reason.to_string(),
+        content_type: "application/json; charset=utf-8".to_string(),
+        body: serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+    }
 }
 
-fn plain(
-    status: u16,
-    reason: &'static str,
-    text: &str,
-) -> (u16, &'static str, &'static str, Vec<u8>) {
-    (
+fn plain(status: u16, reason: &str, text: &str) -> Answer {
+    Answer {
         status,
-        reason,
-        "text/plain; charset=utf-8",
-        text.as_bytes().to_vec(),
-    )
+        reason: reason.to_string(),
+        content_type: "text/plain; charset=utf-8".to_string(),
+        body: text.as_bytes().to_vec(),
+    }
 }
 
 fn write_bytes(
@@ -444,7 +410,7 @@ mod tests {
         Site {
             gd5: frontend.join("vendor/gd5"),
             frontend,
-            domain: None,
+            entrance: None,
         }
     }
 
@@ -542,158 +508,136 @@ mod tests {
         assert!(escaped.starts_with("HTTP/1.1 404"));
     }
 
-    fn start_named(domain: &str) -> SocketAddr {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let mut hosted = site();
-        hosted.domain = Some(domain.to_string());
-        thread::spawn(move || serve(listener, hosted));
-        addr
-    }
-
     #[test]
-    fn public_listener_checks_the_host_and_the_session() {
-        let addr = start_named("example.invalid");
-        let page = exchange(
-            addr,
-            "GET / HTTP/1.1\r\nHost: example.invalid\r\nConnection: close\r\n\r\n",
-        );
-        assert!(page.starts_with("HTTP/1.1 200"));
-        let device = exchange(
-            addr,
-            "GET / HTTP/1.1\r\nHost: ood1.example.invalid\r\nConnection: close\r\n\r\n",
-        );
-        assert!(device.starts_with("HTTP/1.1 200"));
-        let wrong = exchange(
-            addr,
-            "GET / HTTP/1.1\r\nHost: other.example\r\nConnection: close\r\n\r\n",
-        );
-        assert!(wrong.starts_with("HTTP/1.1 421"));
-        assert!(body_of(&wrong).contains("这个地址不是这台电脑的域名。"));
-
-        let payload = br#"{"argv":["desk","kernel","status"]}"#;
-        let denied = exchange(
-            addr,
-            &format!(
-                "POST /api/exec HTTP/1.1\r\nHost: example.invalid\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                payload.len(),
-                std::str::from_utf8(payload).unwrap()
-            ),
-        );
-        assert!(denied.starts_with("HTTP/1.1 401"));
-        assert!(body_of(&denied).contains("请重新进入。"));
-
-        let login = br#"{"argv":["desk","identity","login","--password","nope-nope"]}"#;
-        let guest = exchange(
-            addr,
-            &format!(
-                "POST /api/exec HTTP/1.1\r\nHost: example.invalid\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                login.len(),
-                std::str::from_utf8(login).unwrap()
-            ),
-        );
-        assert!(guest.starts_with("HTTP/1.1 200"));
-    }
-
-    #[test]
-    fn self_signed_certificate_serves_the_same_page() {
-        let dir = std::env::temp_dir().join(format!("buckydesk-tls-{}", std::process::id()));
+    fn entrance_relays_one_desktop() {
+        let dir = std::env::temp_dir().join(format!(
+            "buckydesk-entrance-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let addr = crate::desk::isolate(&dir, "127.0.0.1:1", || {
-            let identity = crate::cloud::issue_certificate("example.invalid").unwrap();
-            assert!(identity.cert_pem.starts_with("-----BEGIN CERTIFICATE-----"));
-            assert_eq!(identity.kind, "self");
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = std::fs::metadata(dir.join("key.pem"))
-                    .unwrap()
-                    .permissions()
-                    .mode();
-                assert_eq!(mode & 0o777, 0o600);
-            }
-            let config = crate::cloud::tls_server_config(&identity).unwrap();
+        crate::desk::isolate(&dir, "127.0.0.1:1", || {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
-            let mut hosted = site();
-            hosted.domain = Some("example.invalid".into());
-            thread::spawn(move || serve_tls(listener, hosted, config));
-            addr
-        });
+            let entrance = crate::cloud::open_entrance().unwrap();
+            let hosted = Site {
+                frontend: PathBuf::new(),
+                gd5: PathBuf::new(),
+                entrance: Some(Arc::clone(&entrance)),
+            };
+            thread::spawn(move || serve(listener, hosted));
 
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let config = rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(AcceptAny))
-            .with_no_client_auth();
-        let name = rustls::pki_types::ServerName::try_from("example.invalid").unwrap();
-        let mut connection = rustls::ClientConnection::new(Arc::new(config), name).unwrap();
-        let mut tcp = TcpStream::connect(addr).unwrap();
-        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut tls = rustls::Stream::new(&mut connection, &mut tcp);
-        tls.write_all(b"GET / HTTP/1.1\r\nHost: example.invalid\r\nConnection: close\r\n\r\n")
+            let saved = dispatch(
+                &split(&format!(
+                    "desk entrance use --at http://{addr} --name home.example"
+                )),
+                Surface::Cli,
+            )
             .unwrap();
-        let mut bytes = Vec::new();
-        match tls.read_to_end(&mut bytes) {
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof && !bytes.is_empty() => {}
-            Err(error) => panic!("{error}"),
-        }
-        let text = String::from_utf8_lossy(&bytes);
-        assert!(text.contains("HTTP/1.1 200"), "{text}");
-        assert!(text.contains("BuckyDesk"));
-        let _ = std::fs::remove_dir_all(dir);
+            assert!(saved.ok);
+            assert!(saved.summary.contains("还要从这台桌面向外连。"));
+
+            let desk = TcpListener::bind("127.0.0.1:0").unwrap();
+            let desk_addr = desk.local_addr().unwrap();
+            thread::spawn(move || {
+                let (mut stream, _) = desk.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    match stream.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(read) => {
+                            buf.extend_from_slice(&chunk[..read]);
+                            if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let body = "你好".as_bytes();
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(header.as_bytes()).unwrap();
+                stream.write_all(body).unwrap();
+            });
+
+            let desk_text = desk_addr.to_string();
+            let polled = thread::spawn(move || crate::cloud::poll_once(&desk_text));
+            let registry_path = dir.join("desktops.json");
+            let started = std::time::Instant::now();
+            while !registry_path.exists() && started.elapsed() < Duration::from_secs(5) {
+                thread::sleep(Duration::from_millis(20));
+            }
+            let page = exchange(
+                addr,
+                "GET /hello HTTP/1.1\r\nHost: home.example\r\nConnection: close\r\n\r\n",
+            );
+            let handled = polled.join().unwrap().unwrap();
+            assert!(handled);
+            assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+            assert_eq!(body_of(&page), "你好");
+
+            let listed = dispatch(&split("cloud status"), Surface::Http).unwrap();
+            assert_eq!(listed.summary, "1 台桌面接到了这个入口。1 台正连着。");
+            let registry = std::fs::read_to_string(dir.join("desktops.json")).unwrap();
+            let link = std::fs::read_to_string(dir.join("link.json")).unwrap();
+            assert!(registry.contains("tokenHash"));
+            assert!(!registry.contains("\"token\""));
+            let token = serde_json::from_str::<Value>(&link).unwrap()["token"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert!(!token.is_empty());
+            assert!(!registry.contains(&token));
+
+            let again = br#"{"name":"home.example"}"#;
+            let taken = exchange(
+                addr,
+                &format!(
+                    "POST /api/entrance/register HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    again.len(),
+                    std::str::from_utf8(again).unwrap()
+                ),
+            );
+            assert!(taken.starts_with("HTTP/1.1 409"), "{taken}");
+            assert!(body_of(&taken).contains("这台桌面已经接到入口。"));
+
+            crate::cloud::forget(&entrance, "home.example");
+            let quiet = exchange(
+                addr,
+                "GET / HTTP/1.1\r\nHost: home.example\r\nConnection: close\r\n\r\n",
+            );
+            assert!(quiet.starts_with("HTTP/1.1 503"), "{quiet}");
+            assert!(body_of(&quiet).contains("这台桌面还没有连上。"));
+
+            let other = exchange(
+                addr,
+                "GET /nope HTTP/1.1\r\nHost: other.example\r\nConnection: close\r\n\r\n",
+            );
+            assert!(other.starts_with("HTTP/1.1 421"), "{other}");
+            assert!(body_of(&other).contains("这个地址不是接到入口的桌面。"));
+
+            let door = exchange(
+                addr,
+                "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            );
+            assert!(door.starts_with("HTTP/1.1 200"), "{door}");
+            assert!(body_of(&door).contains("这是云入口。从桌面的名字打开。"));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[derive(Debug)]
-    struct AcceptAny;
-
-    impl rustls::client::danger::ServerCertVerifier for AcceptAny {
-        fn verify_server_cert(
-            &self,
-            _: &rustls::pki_types::CertificateDer<'_>,
-            _: &[rustls::pki_types::CertificateDer<'_>],
-            _: &rustls::pki_types::ServerName<'_>,
-            _: &[u8],
-            _: rustls::pki_types::UnixTime,
-        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-            Ok(rustls::client::danger::ServerCertVerified::assertion())
-        }
-
-        fn verify_tls12_signature(
-            &self,
-            message: &[u8],
-            cert: &rustls::pki_types::CertificateDer<'_>,
-            dss: &rustls::DigitallySignedStruct,
-        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-            rustls::crypto::verify_tls12_signature(
-                message,
-                cert,
-                dss,
-                &rustls::crypto::ring::default_provider().signature_verification_algorithms,
-            )
-        }
-
-        fn verify_tls13_signature(
-            &self,
-            message: &[u8],
-            cert: &rustls::pki_types::CertificateDer<'_>,
-            dss: &rustls::DigitallySignedStruct,
-        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-            rustls::crypto::verify_tls13_signature(
-                message,
-                cert,
-                dss,
-                &rustls::crypto::ring::default_provider().signature_verification_algorithms,
-            )
-        }
-
-        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-            rustls::crypto::ring::default_provider()
-                .signature_verification_algorithms
-                .supported_schemes()
-        }
+    fn split(line: &str) -> Vec<String> {
+        line.split_whitespace().map(str::to_string).collect()
     }
 }

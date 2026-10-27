@@ -399,6 +399,12 @@ mod tests {
     }
 
     #[test]
+    fn entrance_start_is_cli_only() {
+        let error = dispatch(&argv("desk entrance start"), Surface::Http).unwrap_err();
+        assert!(matches!(error, CommandError::Failed(_)));
+    }
+
+    #[test]
     fn unknown_command_is_usage() {
         let error = dispatch(&argv("desk kernel reboot"), Surface::Cli).unwrap_err();
         assert!(matches!(error, CommandError::Usage(_)));
@@ -452,55 +458,101 @@ mod tests {
             .iter()
             .map(|node| node["name"].as_str().unwrap())
             .collect();
-        assert_eq!(cloud, vec!["status", "domain", "serve"]);
+        assert_eq!(cloud, vec!["status", "serve"]);
+        let entrance: Vec<&str> = desk["commands"][4]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(entrance, vec!["status", "use", "start"]);
+        assert_eq!(desk["commands"][4]["commands"][2]["surface"], "cli");
     }
 
     #[test]
-    fn cloud_domain_is_a_name_until_the_gateway_is_public() {
-        let dir = std::env::temp_dir().join(format!("buckydesk-cloud-{}", std::process::id()));
+    fn entrance_use_is_remembered_until_reset() {
+        let dir = std::env::temp_dir().join(format!(
+            "buckydesk-link-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         crate::desk::isolate(&dir, "127.0.0.1:1", || {
-            let missing = dispatch(&argv("cloud status"), Surface::Http).unwrap();
-            assert!(missing.ok);
+            let started = dispatch(&argv("desk entrance start"), Surface::Cli).unwrap();
+            assert!(!started.ok);
+            assert_eq!(started.summary, "这台桌面还没有名字，也还没有云入口。");
+            let missing = dispatch(&argv("desk entrance status"), Surface::Http).unwrap();
+            assert_eq!(missing.summary, "这台桌面还没有名字，也还没有云入口。");
+            let named = dispatch(
+                &argv("desk entrance use --name home.example"),
+                Surface::Http,
+            )
+            .unwrap();
+            assert!(named.ok);
             assert_eq!(
-                missing.summary,
-                "还没有域名。记下域名之后，才能从网上打开。"
+                named.summary,
+                "这台桌面叫 home.example。公网入口在它自己身上。"
             );
-            let saved =
-                dispatch(&argv("cloud domain --name example.invalid"), Surface::Http).unwrap();
+            let same = dispatch(&argv("desk entrance use"), Surface::Http).unwrap();
+            assert_eq!(same.summary, named.summary);
+            let saved = dispatch(
+                &argv("desk entrance use --at http://127.0.0.1:9/ --name home.example"),
+                Surface::Http,
+            )
+            .unwrap();
             assert!(saved.ok);
-            assert_eq!(saved.data["domain"], "example.invalid");
-            assert_eq!(saved.data["zoneDid"], "did:web:example.invalid");
-            assert_eq!(saved.data["deviceDid"], "did:web:ood1.example.invalid");
-            assert_eq!(saved.data["reachable"], false);
-            assert!(saved
-                .summary
-                .starts_with("已记下域名 example.invalid。别人还不能从网上打开。"));
-            let point_to = saved.data["pointTo"].as_str().unwrap_or("");
-            if !point_to.is_empty() {
-                assert!(saved.summary.contains(point_to));
-                assert!(saved.data["records"].as_array().unwrap().len() >= 2);
+            assert_eq!(
+                saved.summary,
+                "这台桌面叫 home.example。它向外连 http://127.0.0.1:9。还要从这台桌面向外连。"
+            );
+            assert_eq!(saved.data["name"], "home.example");
+            assert_eq!(saved.data["at"], "http://127.0.0.1:9");
+            assert!(saved.data.get("token").is_none());
+            let status = dispatch(&argv("desk entrance status"), Surface::Http).unwrap();
+            assert_eq!(
+                status.summary,
+                "这台桌面叫 home.example。它向外连 http://127.0.0.1:9。"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(dir.join("link.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o777, 0o600);
             }
             let bad = dispatch(
-                &argv("cloud domain --name=http://example.invalid"),
+                &argv("desk entrance use --name=http://example.invalid"),
                 Surface::Http,
             )
             .unwrap();
             assert!(!bad.ok);
             assert_eq!(bad.summary, "域名格式不正确");
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let address = listener.local_addr().unwrap();
-            crate::cloud::set_publish(&address.to_string()).unwrap();
-            let listening = dispatch(&argv("cloud status"), Surface::Http).unwrap();
-            assert_eq!(listening.data["listening"], true);
-            assert!(listening.summary.contains("域名还没有指向这台机器"));
-            assert_eq!(listening.data["reachable"], false);
-            drop(listener);
+            let kept = dispatch(&argv("desk entrance status"), Surface::Http).unwrap();
+            assert_eq!(kept.summary, status.summary);
+            let bad_at = dispatch(&argv("desk entrance use --at notaurl"), Surface::Http).unwrap();
+            assert!(!bad_at.ok);
+            assert_eq!(bad_at.summary, "入口地址不正确");
 
+            std::fs::write(dir.join("cloud.json"), "{}\n").unwrap();
+            std::fs::write(dir.join("cert.pem"), "cert").unwrap();
+            std::fs::write(dir.join("key.pem"), "key").unwrap();
+            std::fs::write(dir.join("desktops.json"), "{\"desktops\":[]}\n").unwrap();
             let reset = dispatch(&argv("desk identity reset"), Surface::Http).unwrap();
             assert!(reset.ok);
-            let cleared = dispatch(&argv("cloud status"), Surface::Http).unwrap();
-            assert_eq!(cleared.data["domain"], "");
+            let cleared = dispatch(&argv("desk entrance status"), Surface::Http).unwrap();
+            assert_eq!(cleared.summary, "这台桌面还没有名字，也还没有云入口。");
+            let empty = dispatch(&argv("cloud status"), Surface::Http).unwrap();
+            assert_eq!(empty.summary, "还没有桌面接到这个入口。");
+            assert!(!dir.join("link.json").exists());
+            assert!(!dir.join("cloud.json").exists());
+            assert!(!dir.join("cert.pem").exists());
+            assert!(!dir.join("key.pem").exists());
+            assert!(!dir.join("desktops.json").exists());
         });
         let _ = std::fs::remove_dir_all(dir);
     }

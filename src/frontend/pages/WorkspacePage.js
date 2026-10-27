@@ -113,7 +113,7 @@ export class WorkspacePage extends Component {
     if (this.state.data?.phase !== 'desk') return;
     let report;
     try {
-      report = await exec(['cloud', 'status']);
+      report = await exec(['desk', 'entrance', 'status']);
     } catch {
       return;
     }
@@ -125,10 +125,15 @@ export class WorkspacePage extends Component {
     });
   }
 
-  async setDomain() {
+  async attachEntrance() {
+    const at = this.field('entranceAt').trim();
+    const name = this.field('entranceName').trim();
+    const argv = ['desk', 'entrance', 'use'];
+    if (at) argv.push('--at', at);
+    if (name) argv.push('--name', name);
     let report;
     try {
-      report = await exec(['cloud', 'domain', '--name', this.field('domain').trim()]);
+      report = await exec(argv);
     } catch {
       this.commit({ ...this.state.data, formError: '工作区暂时打不开。' });
       return;
@@ -1072,26 +1077,17 @@ function computer(page, state) {
     Text({ type: 'secondary', text: '在别处打开' }),
     Text({
       type: 'muted',
-      text: state.cloudSummary || '还只有这台电脑的浏览器能打开。',
+      text: state.cloudSummary || '这台桌面还没有名字，也还没有云入口。',
     }),
-    state.cloud?.url ? Text({ type: 'muted', text: state.cloud.url }) : null,
-    ...(Array.isArray(state.cloud?.records)
-      ? state.cloud.records.map((record) =>
-          Text({ type: 'muted', text: `${record.name}  ${record.type}  ${record.value}` })
-        )
-      : []),
-    state.reach?.kind === 'local'
-      ? Text({ type: 'muted', text: `已记下名字 ${state.reach.value}。` })
+    state.cloud?.name && state.cloud?.at && !(state.cloudSummary || '').includes('还要')
+      ? Text({ type: 'muted', text: '还要从这台桌面向外连。' })
       : null,
     elRow([
+      Input({ id: 'entranceAt', placeholder: '云入口地址' }),
+      Input({ id: 'entranceName', placeholder: '这台桌面的名字' }),
       Button({
-        text: '用我的名字',
-        onClick: () => page.act(['workspace', 'reach', '--kind', 'local']),
-      }),
-      Input({ id: 'domain', placeholder: '自己的域名' }),
-      Button({
-        text: '用这个域名',
-        onClick: () => page.setDomain(),
+        text: '接到入口',
+        onClick: () => page.attachEntrance(),
       }),
     ]),
     Text({ type: 'secondary', text: '这台电脑上的人' }),
