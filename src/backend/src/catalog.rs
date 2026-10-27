@@ -1,7 +1,7 @@
 use crate::command::{Arg, Command, CommandError, Invocation, Report, Surface};
 use crate::http::{open_browser, serve, Site};
 use serde_json::{Map, Value};
-use std::net::{IpAddr, TcpListener};
+use std::net::TcpListener;
 use std::path::PathBuf;
 
 const BIND: Arg = Arg {
@@ -56,7 +56,7 @@ pub fn root() -> &'static Command {
 
 static ROOT: Command = Command {
     name: "bucky",
-    summary: "这台电脑上的工作区，以及用域名从公网打开它",
+    summary: "这台电脑上的工作区，以及给这些桌面的公网入口",
     surface: Surface::Both,
     args: &[],
     children: &[VERSION, COMMANDS, DESK, CLOUD],
@@ -68,16 +68,22 @@ static DESK: Command = Command {
     summary: "这台电脑上的工作区",
     surface: Surface::Both,
     args: &[],
-    children: &[DESK_OPEN, KERNEL, IDENTITY, crate::workspace::WORKSPACE],
+    children: &[
+        DESK_OPEN,
+        KERNEL,
+        IDENTITY,
+        crate::workspace::WORKSPACE,
+        ENTRANCE,
+    ],
     run: None,
 };
 
 static CLOUD: Command = Command {
     name: "cloud",
-    summary: "用域名从公网打开这个 Zone",
+    summary: "给桌面的公网入口",
     surface: Surface::Both,
     args: &[],
-    children: &[CLOUD_STATUS, CLOUD_DOMAIN, CLOUD_SERVE],
+    children: &[CLOUD_STATUS, CLOUD_SERVE],
     run: None,
 };
 
@@ -108,28 +114,13 @@ static DESK_OPEN: Command = Command {
     run: Some(server),
 };
 
-const ZONE_DOMAIN: Arg = Arg {
-    name: "name",
-    takes_value: true,
-    summary: "Zone 的域名",
-};
-
 static CLOUD_STATUS: Command = Command {
     name: "status",
-    summary: "查看域名、DNS 和 80/443 是否对得上",
+    summary: "查看哪些桌面接了进来，哪些正连着",
     surface: Surface::Both,
     args: &[],
     children: &[],
     run: Some(cloud_status),
-};
-
-static CLOUD_DOMAIN: Command = Command {
-    name: "domain",
-    summary: "查看或记下 Zone 的域名",
-    surface: Surface::Both,
-    args: &[ZONE_DOMAIN],
-    children: &[],
-    run: Some(cloud_domain),
 };
 
 const CLOUD_BIND: Arg = Arg {
@@ -138,31 +129,67 @@ const CLOUD_BIND: Arg = Arg {
     summary: "公网监听地址，默认 0.0.0.0:80",
 };
 
-const CLOUD_TLS_BIND: Arg = Arg {
-    name: "tls-bind",
-    takes_value: true,
-    summary: "HTTPS 监听地址。入口是 80 时，默认同一地址的 443",
-};
-
-const CLOUD_CERT: Arg = Arg {
-    name: "cert",
-    takes_value: true,
-    summary: "证书 PEM。不带时由这台机器签发",
-};
-
-const CLOUD_KEY: Arg = Arg {
-    name: "key",
-    takes_value: true,
-    summary: "证书私钥 PEM，和 --cert 一起给出",
-};
-
 static CLOUD_SERVE: Command = Command {
     name: "serve",
-    summary: "按记下的域名在公网提供工作区",
+    summary: "在公网接住桌面连出来的访问",
     surface: Surface::Cli,
-    args: &[CLOUD_BIND, CLOUD_TLS_BIND, CLOUD_CERT, CLOUD_KEY],
+    args: &[CLOUD_BIND],
     children: &[],
     run: Some(cloud_serve),
+};
+
+static ENTRANCE: Command = Command {
+    name: "entrance",
+    summary: "这台桌面的公网入口",
+    surface: Surface::Both,
+    args: &[],
+    children: &[ENTRANCE_STATUS, ENTRANCE_USE, ENTRANCE_START],
+    run: None,
+};
+
+static ENTRANCE_STATUS: Command = Command {
+    name: "status",
+    summary: "查看这台桌面接到哪里",
+    surface: Surface::Both,
+    args: &[],
+    children: &[],
+    run: Some(entrance_status),
+};
+
+const ENTRANCE_AT: Arg = Arg {
+    name: "at",
+    takes_value: true,
+    summary: "云入口的地址",
+};
+
+const ENTRANCE_NAME: Arg = Arg {
+    name: "name",
+    takes_value: true,
+    summary: "这台桌面的名字",
+};
+
+static ENTRANCE_USE: Command = Command {
+    name: "use",
+    summary: "记下云入口和这台桌面的名字",
+    surface: Surface::Both,
+    args: &[ENTRANCE_AT, ENTRANCE_NAME],
+    children: &[],
+    run: Some(entrance_use),
+};
+
+const ENTRANCE_DESK: Arg = Arg {
+    name: "desk",
+    takes_value: true,
+    summary: "本机页面地址，默认 127.0.0.1:1016",
+};
+
+static ENTRANCE_START: Command = Command {
+    name: "start",
+    summary: "向外连上云入口，把访问转到这台桌面",
+    surface: Surface::Cli,
+    args: &[ENTRANCE_DESK],
+    children: &[],
+    run: Some(entrance_start),
 };
 
 static KERNEL: Command = Command {
@@ -283,7 +310,7 @@ static IDENTITY_PASSWORD: Command = Command {
 
 static IDENTITY_RESET: Command = Command {
     name: "reset",
-    summary: "删除这台电脑上记下的工作区身份",
+    summary: "删除这台电脑上记下的工作区和入口",
     surface: Surface::Both,
     args: &[],
     children: &[],
@@ -324,7 +351,7 @@ fn server(invocation: &Invocation) -> Result<Report, CommandError> {
     let site = Site {
         frontend: frontend_dir(invocation),
         gd5: gd5_dir(invocation),
-        domain: None,
+        entrance: None,
     };
     serve(listener, site).map_err(|error| CommandError::Failed(error.to_string()))?;
     Ok(Report::ok(url))
@@ -339,141 +366,70 @@ fn kernel_services(_: &Invocation) -> Result<Report, CommandError> {
 }
 
 fn cloud_status(_: &Invocation) -> Result<Report, CommandError> {
-    match crate::desk::with_desk(crate::cloud::load) {
-        Ok(state) => Ok(crate::cloud::status_report(&state)),
-        Err(report) => Ok(report),
-    }
-}
-
-fn cloud_domain(invocation: &Invocation) -> Result<Report, CommandError> {
-    let name = invocation.value("name").unwrap_or("");
-    let saved = crate::desk::with_desk(|| {
-        if name.is_empty() {
-            crate::cloud::load()
-        } else {
-            crate::cloud::set_domain(name)
-        }
-    });
-    match saved {
-        Ok(state) => Ok(crate::cloud::status_report(&state)),
-        Err(report) => Ok(report),
-    }
+    Ok(crate::desk::with_desk(crate::cloud::host_status))
 }
 
 fn cloud_serve(invocation: &Invocation) -> Result<Report, CommandError> {
-    let state = match crate::desk::with_desk(crate::cloud::load) {
-        Ok(state) => state,
-        Err(report) => return Ok(report),
-    };
-    if state.domain.is_empty() {
-        return Ok(Report::fail("先记下域名。"));
-    }
-    let cert = invocation.value("cert");
-    let key = invocation.value("key");
-    if cert.is_some() != key.is_some() {
-        return Ok(Report::fail("证书和私钥要一起给出。"));
-    }
     let bind = invocation.value("bind").unwrap_or("0.0.0.0:80").to_string();
     let listener = TcpListener::bind(&bind)
         .map_err(|error| CommandError::Failed(format!("无法监听 {bind}: {error}")))?;
     let address = listener
         .local_addr()
         .map_err(|error| CommandError::Failed(format!("无法读取监听地址: {error}")))?;
-    let tls_bind = invocation
-        .value("tls-bind")
-        .map(str::to_string)
-        .or_else(|| default_tls_bind(&address));
-    let tls = match tls_bind {
-        Some(tls_bind) => match prepare_tls(invocation, &state.domain, cert, key, &tls_bind) {
-            Ok(opened) => Some(opened),
-            Err(message) => {
-                eprintln!("{message}");
-                None
-            }
-        },
-        None => None,
-    };
-    let (tls_address, certificate) = match &tls {
-        Some(opened) => (opened.address.clone(), opened.kind.to_string()),
-        None => (String::new(), String::new()),
-    };
-    if let Err(report) = crate::desk::with_desk(|| {
-        crate::cloud::set_entrance(&address.to_string(), &tls_address, &certificate)
-    }) {
-        return Ok(report);
-    }
-    let url = crate::cloud::public_url(&state.domain, address.port());
+    let url = format!("http://{address}");
     println!("{url}");
-    if let Some(opened) = tls {
-        if let Some(port) = opened
-            .address
-            .rsplit_once(':')
-            .and_then(|(_, port)| port.parse().ok())
-        {
-            println!("{}", crate::cloud::https_url(&state.domain, port));
-        }
-        std::thread::spawn(move || {
-            if let Err(error) = crate::http::serve_tls(opened.listener, opened.site, opened.config)
-            {
-                eprintln!("HTTPS 停了: {error}");
-            }
-        });
-    }
-    let site = crate::http::Site {
-        frontend: frontend_dir(invocation),
-        gd5: gd5_dir(invocation),
-        domain: Some(state.domain),
+    println!("桌面从这里向外连。");
+    let entrance = match crate::cloud::open_entrance() {
+        Ok(entrance) => entrance,
+        Err(report) => return Ok(report),
     };
-    crate::http::serve(listener, site).map_err(|error| CommandError::Failed(error.to_string()))?;
+    let site = Site {
+        frontend: PathBuf::new(),
+        gd5: PathBuf::new(),
+        entrance: Some(entrance),
+    };
+    serve(listener, site).map_err(|error| CommandError::Failed(error.to_string()))?;
     Ok(Report::ok(url))
 }
 
-struct TlsDoor {
-    listener: TcpListener,
-    site: crate::http::Site,
-    config: std::sync::Arc<rustls::ServerConfig>,
-    address: String,
-    kind: &'static str,
+fn entrance_status(_: &Invocation) -> Result<Report, CommandError> {
+    Ok(crate::desk::with_desk(crate::cloud::link_status))
 }
 
-fn default_tls_bind(address: &std::net::SocketAddr) -> Option<String> {
-    if address.port() != 80 {
-        return None;
-    }
-    Some(match address.ip() {
-        IpAddr::V4(ip) => format!("{ip}:443"),
-        IpAddr::V6(ip) => format!("[{ip}]:443"),
-    })
+fn entrance_use(invocation: &Invocation) -> Result<Report, CommandError> {
+    let at = invocation.value("at").map(str::to_string);
+    let name = invocation.value("name").map(str::to_string);
+    Ok(crate::desk::with_desk(|| {
+        crate::cloud::use_link(at.as_deref(), name.as_deref())
+    }))
 }
 
-fn prepare_tls(
-    invocation: &Invocation,
-    domain: &str,
-    cert: Option<&str>,
-    key: Option<&str>,
-    tls_bind: &str,
-) -> Result<TlsDoor, String> {
-    let identity = crate::desk::with_desk(|| crate::cloud::identity_for(domain, cert, key))
-        .map_err(|report| report.summary)?;
-    let config = crate::cloud::tls_server_config(&identity).map_err(|report| report.summary)?;
-    let listener = TcpListener::bind(tls_bind)
-        .map_err(|error| format!("HTTPS 暂时听不了 {tls_bind}：{error}"))?;
-    let address = listener
-        .local_addr()
-        .map_err(|error| format!("无法读取 HTTPS 地址: {error}"))?
+fn entrance_start(invocation: &Invocation) -> Result<Report, CommandError> {
+    let desk = invocation
+        .value("desk")
+        .unwrap_or("127.0.0.1:1016")
         .to_string();
-    let site = crate::http::Site {
-        frontend: frontend_dir(invocation),
-        gd5: gd5_dir(invocation),
-        domain: Some(domain.to_string()),
-    };
-    Ok(TlsDoor {
-        listener,
-        site,
-        config,
-        address,
-        kind: identity.kind,
-    })
+    let ready = crate::desk::with_desk(|| {
+        let report = crate::cloud::link_status();
+        let name = report
+            .data
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let at = report.data.get("at").and_then(Value::as_str).unwrap_or("");
+        if report.ok && !name.is_empty() && !at.is_empty() {
+            Ok(report.summary)
+        } else {
+            Err(Report::fail(report.summary))
+        }
+    });
+    match ready {
+        Ok(summary) => {
+            println!("{summary}");
+            Ok(crate::cloud::run_link(&desk))
+        }
+        Err(report) => Ok(report),
+    }
 }
 
 fn kernel_start(_: &Invocation) -> Result<Report, CommandError> {

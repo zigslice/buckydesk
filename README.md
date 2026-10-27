@@ -14,4 +14,4 @@ cargo run -p buckydesk -- desk open
 
 浏览器进入 `http://127.0.0.1:1016`，看到的是工作区。名字、密码、文件、消息、Agent、模型和工作记在这台电脑上。摘要会发给填写的模型服务。内核是否已在运行会显示出来；拉起内核仍留在后面。
 
-在云主机上先 `bucky cloud domain --name <域名>`，再 `bucky cloud serve`。同一页面按这个域名从 HTTP 和 HTTPS 提供。HTTPS 先用这台机器签发的证书。域名要指到 `cloud status` 给出的地址。公网页面要先登录。
+云主机运行 `bucky cloud serve`，只做公网入口。每台桌面记下入口地址和自己的名字，再运行 `bucky desk entrance start` 向外连。别人用这台桌面的名字打开云主机，访问转到那台桌面，先登录再进入。自己有固定公网地址的桌面不经过这台云主机。这一版入口是 HTTP。

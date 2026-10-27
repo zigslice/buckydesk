@@ -12,9 +12,6 @@ path = "src/main.rs"
 [dependencies]
 base64 = "0.22"
 idna = "=0.5.0"
-rcgen = "=0.12.1"
-rustls = { version = "=0.23.20", default-features = false, features = ["ring", "std"] }
-rustls-pemfile = "=2.2.0"
 ureq = { version = "=2.9.7", features = ["json"] }
 url = "=2.5.0"
 zeroize = "=1.8.1"
