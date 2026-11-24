@@ -293,16 +293,15 @@ mod tests {
         assert!(report.summary.contains("server"));
         assert!(report.summary.contains("kernel"));
         assert!(report.summary.contains("identity"));
+        assert!(report.summary.contains("product"));
     }
 
     #[test]
-    fn kernel_status_is_a_stub() {
+    fn kernel_status_returns_state() {
         let report = dispatch(&argv("kernel status"), Surface::Http).unwrap();
         assert!(report.ok);
-        assert_eq!(
-            report.data.get("attached").and_then(Value::as_bool),
-            Some(false)
-        );
+        assert!(report.data.get("state").is_some());
+        assert!(report.data.get("provision_status").is_some());
     }
 
     #[test]
@@ -337,7 +336,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["version", "commands", "server", "kernel", "identity"]
+            vec!["version", "commands", "server", "kernel", "identity", "product"]
         );
         let server = &tree["commands"][2];
         assert_eq!(server["surface"], "cli");
@@ -345,5 +344,20 @@ mod tests {
         let status = &tree["commands"][3]["commands"][0];
         assert_eq!(status["path"], serde_json::json!(["kernel", "status"]));
         assert_eq!(status["surface"], "both");
+    }
+
+    #[test]
+    fn identity_status_returns_provision_state() {
+        let report = dispatch(&argv("identity status"), Surface::Http).unwrap();
+        assert!(report.ok);
+        assert!(report.data.get("status").is_some());
+        assert!(report.data.get("configured").is_some());
+    }
+
+    #[test]
+    fn product_info_returns_edition() {
+        let report = dispatch(&argv("product info"), Surface::Http).unwrap();
+        assert!(report.ok);
+        assert!(report.data.get("edition").is_some());
     }
 }

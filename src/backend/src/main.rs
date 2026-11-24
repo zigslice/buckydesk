@@ -1,6 +1,11 @@
 mod catalog;
 mod command;
 mod http;
+mod identity;
+mod kernel;
+mod krpc;
+mod product;
+mod root;
 
 use crate::command::{dispatch, CommandError, Surface};
 use std::env;
