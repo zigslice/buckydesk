@@ -8,7 +8,7 @@ BuckyOS 继续拥有 Zone 的语义。BuckyDesk 拥有「这台个人电脑如�
 
 | 属于 BuckyOS / 上游 | 属于 BuckyDesk |
 | --- | --- |
-| `system-config`、scheduler、`node-daemon`、frame 服务、Web Desktop、`.pikg` | 安装根、安装事务、开机与崩溃监管、日志与诊断入口 |
+| `system-config`、scheduler、`node-daemon`、frame 服务、Web Desktop、对象树页面和 `aiworkspace` 后台、`.pikg` | 安装根、安装事务、开机与崩溃监管、日志与诊断入口。监管要确认 `aiworkspace` 已注册并在听 4120 |
 | 激活文件格式、`provision` 写盘协议、网页激活 RPC | 选择默认激活路径，保证与 3182 互斥，激活进程退出后重新拉起 |
 | AppLoader、OCI 镜像、WSLC/Docker 适配 | 把选定的容器运行时安装到可用，并把同一用户、同一权限的运行时交给 `node-daemon` |
 | `cyfs-gateway` 的路由、rtcp、SN/BNS | 是否在首启打开公网端口；本机防火墙例外只覆盖真正需要的端口 |
@@ -16,7 +16,7 @@ BuckyOS 继续拥有 Zone 的语义。BuckyDesk 拥有「这台个人电脑如�
 | BuckyOSApp 的 DID 库和 `BuckyApi` | 默认安装不包含这个壳。需要壳内签名或去激活别的设备时再作为附加组件 |
 | 服务升级的 pkg ready 语义 | 桌面安装包的下载、签名、覆盖安装和回滚 |
 
-不要在 BuckyDesk 里重写一份调度器或一份控制面板。窗口里应加载上游构建好的 `bin/control-panel/web/`。身份文件应通过 `provision` API 或 `node-daemon` 的激活服务写入，避免桌面端私自拼 JWT。
+调度器、控制面板和对象树都用上游已经构建好的。窗口加载 `bin/control-panel/web/`。对象树的后台随同一份 rootfs 装到 `bin/aiworkspace/`，由 `node-daemon` 拉起。身份文件应通过 `provision` API 或 `node-daemon` 的激活服务写入。桌面端不自己拼 JWT，也不自己做一套对象树界面。
 
 ## 建议的运行结构
 
@@ -28,8 +28,9 @@ BuckyOS 继续拥有 Zone 的语义。BuckyDesk 拥有「这台个人电脑如�
   → 本机首次激活（默认：单 OOD、无 SN）
   → 把 Owner 私钥备份到用户指定的位置
   → 启动并监管 node-daemon
-  → 等待 boot/config 与本机网关就绪
-  → 打开 Web Desktop
+  → 等待 boot/config、本机网关、control-panel 就绪
+  → 等待 service info 里出现 aiworkspace，并且 4120 在听
+  → 打开 Web Desktop（对象树从这里进入）
 ```
 
 监管进程是产品的一部分。它需要知道三种退出：
@@ -85,7 +86,7 @@ Owner 私钥只出现在用户选定的备份位置。不要把网页向导里�
 
 ## 窗口
 
-默认窗口只加载 `bin/control-panel/web/`。这个页面已经是系统的人机界面，BuckyDesk 负责把它打开，并负责窗口下面的进程是否活着。
+默认窗口只加载 `bin/control-panel/web/`。这个页面已经是系统的人机界面，对象树的入口也在这里。BuckyDesk 负责把它打开，并负责窗口下面的进程是否活着，其中包括 `aiworkspace`。用户点开一份文档后，浏览器去的是那份文档自己的地址；那个地址能打开，说明后台和网关转发都在。
 
 BuckyOSApp 留在默认安装之外。它解决的是另一件事：钥匙放在壳里、以及发现别的设备。把监管做进那个壳，会把「本机 Zone」和「去激活远程设备」合成一个首启流程。
 
@@ -113,7 +114,7 @@ BuckyOSApp 留在默认安装之外。它解决的是另一件事：钥匙放在
 
 1. 安装包不要求预先安装 Rust、Node、pnpm、Deno 或源码仓库。
 2. 安装结束时存在独立的 `BUCKYOS_ROOT`，且没有改写开发者已有的另一套根。
-3. 用户只输入显示名、密码和备份位置，即可到达登录后的 Web 桌面。
+3. 用户只输入显示名、密码和备份位置，即可到达登录后的 Web 桌面。从桌面点开一份对象树文档，页面落在 `aiws-<工作区 id>.<zone>`，由本机的 `aiworkspace` 应答。
 4. 重启电脑后，无需再执行命令，桌面仍能打开。
 5. 预装的容器应用（Jarvis 或当时的等价物）能启动并完成一次对话或等价的健康检查。
 6. 覆盖安装后，`data/home` 里预先写入的文件还在。
