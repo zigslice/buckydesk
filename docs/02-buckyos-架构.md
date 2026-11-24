@@ -45,12 +45,28 @@ BuckyOS 把用户自己的设备收成一个 **Zone**。Zone 是逻辑上的个�
 | 层 | 目录 | 桌面上的形态 |
 | --- | --- | --- |
 | Kernel | `src/kernel/` | 本机进程，Zone 起来之前就能工作。包括 `node_daemon`、`sys_config_service`、`verify_hub`、`scheduler`、`task_manager`、`kmsg`、`kevent`、`workflow`。 |
-| Frame | `src/frame/` | 可缺失的系统功能。当前仓库里控制面板、repo、文件、消息、OpenDAN、AICC、HomeStation 都有实现，构建进 `bin/`。其中 App/Agent/HostScript 另走容器。 |
+| Frame | `src/frame/` | 可缺失的系统功能。当前仓库里控制面板、repo、文件、消息、OpenDAN、AICC、HomeStation、AI Workspace 都有实现，构建进 `bin/`。其中 App/Agent/HostScript 另走容器。 |
 | Apps | `src/apps/` | 用户态应用。Jarvis 是版本化的 `.pikg`。一般在容器中运行，没有 root。 |
-| Web Desktop | `src/frame/desktop/` | 控制面板的 React UI，安装到 `bin/control-panel/web/`。 |
+| Web Desktop | `src/frame/desktop/` | 控制面板的 React UI，安装到 `bin/control-panel/web/`。对象树的查看和编辑页在 `src/frame/desktop/src/app/aiworkspace`。 |
+| 对象树后台 | `src/frame/aiworkspace/` | 服务名 `aiworkspace`。源码在 frame，`kernel_pkg.toml` 把它标成 kernel 服务，安装到 `bin/aiworkspace/`。 |
 | 激活向导 | `src/kernel/node_active/` | 唯一源码。`rootfs/bin/node-active/` 是打进镜像的构建产物。 |
 
-`src/bucky_project.yaml` 里和桌面直接相关的安装映射包括：`node_daemon`、`system_config`、`verify_hub`、`scheduler`、`control_panel`、`repo_service`、`nfs_server`、`msg_center`、`opendan`、`aicc`、`homestation`、`desktop`（进 `bin/control-panel/web/`），以及系统自带的 `buckyos` CLI（`bin/buckyos` 和 `libexec/buckyos-tool/`）。
+`src/bucky_project.yaml` 里和桌面直接相关的安装映射包括：`node_daemon`、`system_config`、`verify_hub`、`scheduler`、`control_panel`、`repo_service`、`nfs_server`、`msg_center`、`opendan`、`aicc`、`homestation`、`aiworkspace`（进 `bin/aiworkspace/`）、`desktop`（进 `bin/control-panel/web/`），以及系统自带的 `buckyos` CLI（`bin/buckyos` 和 `libexec/buckyos-tool/`）。`aiworkspace` 和 `desktop` 同属 Desktop Service 组件，不在 BuckyOSApp 里。
+
+## 对象树：页面和后台是一套
+
+AI Workspace 是上游已经做成产品的对象树。一份文档（一张画布）是一棵对象树；办公界面是这棵树的查看和编辑。设计写在 `doc/workspace/`，实现分成两处，发行时必须一起落地。这一节按 2026-11-24 的默认分支 `849bec4` 核对。
+
+| 一半 | 在哪 | 装到哪 | 做什么 |
+| --- | --- | --- | --- |
+| 页面 | `src/frame/desktop/src/app/aiworkspace` | `bin/control-panel/web/` | 桌面里的入口。点开一份文档时调用 `requestServiceLaunch('aiworkspace', url)`，把当前桌面登录交到那份文档自己的地址，浏览器再落到一次性的 `/sso_callback`。 |
+| 后台 | `src/frame/aiworkspace`，进程名 `aiworkspace` | `bin/aiworkspace/` | 保存对象。`buckyos-api` 里服务名是 `aiworkspace`，端口常量 `AIWORKSPACE_SERVICE_PORT` 是 4120。Zone 模式下由 `node-daemon` 拉起，经 `/kapi/aiworkspace` 到达；每个请求由服务自己用 verify-hub 的 session token 认证。 |
+
+网关已经认识画布自己的主机名。`src/rootfs/etc/boot_gateway.yaml` 里，主机名 `aiws-<工作区 id>.<zone>` 会先折成查找键 `aiws`，再从 `APP_INFO` 取出 `service_id`。注释写明这些源由 `aiworkspace` 服务承接。查找键上要有这个服务，转发才成立。
+
+Zone 模式下，工作区目录放在服务自己的数据目录（软重置保留），对象进节点的 named store，由这个服务在 `nfs-server` 上的 bucket 持有。所以开箱要能打开一份文档时，`nfs-server` 也要在。磁盘上有 `bin/aiworkspace/` 还不够：节点的 service info 里要有 `aiworkspace`，4120 上要有进程。
+
+BuckyDesk 的窗口打开 `bin/control-panel/web/`。对象树的存储、视图和编辑器留在上游这两处。发行包按 Desktop Service 的 rootfs 整份安装，监管把「`aiworkspace` 已注册且在听」算进桌面就绪。
 
 Beta2.2 README 点名的用户可见能力：Web 桌面与控制面板、FileBrowser、MessageHub、OpenDAN/Jarvis、AI Compute Center、Workflow 与 Task Manager、`.pikg` 应用安装。同时写明尚未完成的部分：Workflow 运行态仍主要在内存；scheduler 里的 Function Instance 替换未完成；外部消息通道目前实现了 Telegram。
 
@@ -88,10 +104,10 @@ App 进程的身份不从包名猜。`node-daemon` 必须注入 `BUCKYOS_APP_DID
 | 层 | 缺了以后 | 对开箱运行 |
 | --- | --- | --- |
 | Kernel + `cyfs-gateway` | Zone 无法 boot，也没有本机入口 | 必需。至少是 `node-daemon`、`system-config`、scheduler、`verify-hub`、NodeGateway |
-| Frame 服务 | 少一项系统能力。`src/readme.md` 把 frame 定义成可缺失 | 按首屏需要挑选。boot 模板现在会写入 `control-panel` 和 `repo-service` 的 spec，所以默认安装会拉起它们；这是当前发行物的选择，不是控制环本身的前提 |
+| Frame 服务 | 少一项系统能力。`src/readme.md` 把 frame 定义成可缺失 | 控制环不必全装。要打开系统桌面，boot 路径会拉起 `control-panel`。要在这个桌面上打开对象树，再带上 `aiworkspace` 和 `nfs-server`。boot 模板现在会写入 `control-panel` 和 `repo-service` 的 spec；`aiworkspace` 以 kernel 服务的身份由 `node-daemon` 拉起 |
 | App（`.pikg`，含 Jarvis） | Zone 仍在，只是没有那个用户工作负载 | 可后装。要验收「能对话」时再预装 Jarvis，并因此带上容器运行时 |
 
-目录和启动重要性也不重合。`control-panel` 的源码在 `src/frame/`，boot 路径却把它写成初始服务。看目录会以为它可选，看启动会以为它是内核。
+目录和启动重要性也不重合。`control-panel` 的源码在 `src/frame/`，boot 路径却把它写成初始服务。`aiworkspace` 的源码也在 `src/frame/`，`kernel_pkg.toml` 却把它标成 kernel 服务。看目录会以为它们可选，看启动会以为它们是内核。
 
 ### 客户端：都在调用 Zone，互相不是上下层
 
@@ -111,7 +127,7 @@ BuckyOSApp 和 Web 桌面是并列的两个客户端。安装器把它们收成�
 系统桌面是控制面板里的 Web 应用，不是操作系统的窗口管理器，也不是 BuckyOSApp 的主界面。
 
 - 开发时：`src/frame/desktop` 用 Vite，端口 5174，默认 Mock（`VITE_CP_USE_MOCK=true`）。Mock 能看界面，不能证明身份或服务链路。
-- 运行时：页面由已启动的 `control-panel` 提供。真实 Zone 要关掉 Mock，并让页面能访问网关。
+- 运行时：页面由已启动的 `control-panel` 提供。真实 Zone 要关掉 Mock，并让页面能访问网关。从这里点开一份对象树文档，浏览器会离开控制面板，进入 `aiws-<工作区 id>.<zone>`，由 `aiworkspace` 接待。
 - BuckyOSApp 当前的主界面是 DID、SN 绑定，以及发现并打开另一台设备的激活页。应用列表只展示，点击不启动。它是身份宿主，不是这套 Web 桌面。
 
 所以桌面产品至少有两个 UI 层：一个负责本机身份和窗口，一个是 Zone 起来之后的系统桌面。BuckyDesk 需要决定用户安装后第一眼看到哪一层，以及什么时候从身份层进入系统桌面。

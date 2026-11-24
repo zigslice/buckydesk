@@ -102,9 +102,11 @@ BuckyOSApp 仓库里的 `doc/目录结构.md` 还描述了 `$BUCKYOS_ROOT/local/
 BuckyDesk 窗口 / BuckyOSApp
   ├─ 尚未激活：本机向导，或打开 3182
   └─ 已激活：打开 control-panel 的 Web Desktop
-       └─ Web Desktop 再打开文件、消息、AI Center、Jarvis
+       ├─ 文件、消息、AI Center、Jarvis
+       └─ 对象树文档：桌面把登录交给 aiworkspace，
+          浏览器打开 aiws-<工作区 id>.<zone>
 ```
 
-Web Desktop 的工程在 buckyos `src/frame/desktop`。它假定 Zone 已经能提供登录和 kapi。Mock 模式只用于界面开发。
+Web Desktop 的工程在 buckyos `src/frame/desktop`。它假定 Zone 已经能提供登录和 kapi。Mock 模式只用于界面开发。对象树页面在这个工程的 `src/app/aiworkspace`，保存对象的进程是 `bin/aiworkspace/` 里的 `aiworkspace`。桌面能画出来、后台没起来时，点开文档没有源可去。
 
 BuckyDesk 如果复用 BuckyOSApp 的窗口，就同时接过它的 SN 优先身份流程。如果首版采用本地 `provision`，首次启动不应再强制走「助记词 → 邀请码 → SN 绑定 → 扫描局域网」。那种流程是「这台电脑去激活另一台设备，或给自己的 Zone 注册一个可公开的名字」。两种流程可以并存，但默认路径只能有一条。
